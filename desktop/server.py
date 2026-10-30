@@ -28,7 +28,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from . import appconfig, applock, botsup, vaultstore
+from . import (
+    appconfig,
+    applock,
+    botsup,
+    mediatools,
+    storyboard,
+    streamcache,
+    thumbpick,
+    vaultstore,
+)
 from .catalog import (
     Catalog,
     clean_folder_path,
@@ -45,6 +54,7 @@ from .tg import (
     TelegramService,
     TransferCancelled,
     friendly_error,
+    media_hint,
 )
 
 log = logging.getLogger("tfe.server")
@@ -60,6 +70,8 @@ LOCK_OPEN_PATHS = {
     "/api/status",
     "/api/unlock",
     "/api/lock",
+    "/api/pin/recover",
+    "/api/pin/reset",
     "/api/quit",
     "/api/bot/start",
     "/api/bot/stop",
@@ -69,6 +81,7 @@ LOCK_OPEN_PATHS = {
 SPLIT_HARD_CAP = 64 * 1024 ** 3
 CSP = (
     "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
+    "font-src 'self' data:; "
     "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; "
     "frame-src 'self' blob:; object-src 'none'; base-uri 'none'; "
     "form-action 'self'; frame-ancestors 'self'"
@@ -76,7 +89,7 @@ CSP = (
 PUBLIC_ITEM_KEYS = (
     "id", "message_id", "name", "kind", "kind_label", "mime", "size", "width",
     "height", "duration", "folder", "tags", "favorite", "caption", "note",
-    "tg_date", "added_at", "hidden", "has_thumb", "thumb_version",
+    "tg_date", "added_at", "hidden", "has_thumb", "thumb_version", "play_pos",
 )
 
 
@@ -88,6 +101,18 @@ class SetupBody(BaseModel):
 
 class VaultBody(BaseModel):
     vault: str
+
+
+class VaultSwitchBody(BaseModel):
+    id: str
+
+
+class VaultCreateBody(BaseModel):
+    name: str
+
+
+class VaultBotBody(BaseModel):
+    id: str = ""
 
 
 class PhoneBody(BaseModel):
@@ -106,6 +131,11 @@ class PinBody(BaseModel):
     pin: str = ""
 
 
+class PinResetBody(BaseModel):
+    code: str = ""
+    pin: str = ""
+
+
 class ItemPatch(BaseModel):
     name: Optional[str] = None
     folder: Optional[str] = None
@@ -117,6 +147,19 @@ class ItemPatch(BaseModel):
 
 class MergeBody(BaseModel):
     item_id: int
+
+
+class PlaybackBody(BaseModel):
+    position: float = 0
+    duration: float = 0
+
+
+class MpvBody(BaseModel):
+    position: float = 0
+
+
+class ThumbPickBody(BaseModel):
+    index: int
 
 
 class TransferCancelBody(BaseModel):
@@ -226,15 +269,19 @@ def _vault(status: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return status.get("vault")
 
 
-def _chat_id(state: Any) -> Optional[int]:
-    vault = state.service.status().get("vault")
+def _status_chat_id(status: Dict[str, Any]) -> Optional[int]:
+    vault = status.get("vault")
     if not vault:
         return None
-    channel_id = vault.get("channel_id")
     try:
+        channel_id = vault.get("channel_id")
         return int(channel_id) if channel_id else None
     except (TypeError, ValueError):
         return None
+
+
+def _chat_id(state: Any) -> Optional[int]:
+    return _status_chat_id(state.service.status())
 
 
 async def _scoped_item(state: Any, item_id: int) -> Dict[str, Any]:
@@ -362,7 +409,12 @@ async def lifespan(app: FastAPI):
     # After restore: a PIN that arrived with the vault snapshot must lock the
     # app on this boot too.
     state.locked = applock.has_pin()
-    state.catalog = Catalog(appconfig.LIBRARY_PATH)
+    state.catalog = Catalog(appconfig.LIBRARY_PATH, _status_chat_id(state.service.status()))
+    marked = await run_in_threadpool(
+        state.catalog.ensure_has_thumb, _custom_thumb_ids()
+    )
+    if marked:
+        log.info("Kept %d custom thumbnail(s) visible", marked)
     state.bot = botsup.Supervisor()
     state.bot.start_watching()
     info = state.service.status()
@@ -370,18 +422,24 @@ async def lifespan(app: FastAPI):
         # Snapshot zips uploaded since the last sync are indexed on boot; hide
         # them right away instead of leaving them visible until the next sync.
         _spawn(state, _hide_snapshots_quietly(state))
+        _spawn(state, _prime_vaults(state))
     try:
         yield
     finally:
         for task in list(state.tasks):
             task.cancel()
+        # Stop the bot first so no bot job keeps writing while the app exits.
+        state.bot.shutdown()
+        try:
+            await run_in_threadpool(botsup.terminate)
+        except Exception:
+            log.exception("Could not stop the storage bot on close")
         info = state.service.status()
         if info["authorized"] and info.get("vault"):
             try:
                 await asyncio.wait_for(vaultstore.save(state.service), timeout=120.0)
             except Exception:
                 log.exception("Vault data save on close failed")
-        state.bot.shutdown()
         await state.service.close()
 
 
@@ -495,6 +553,7 @@ async def status(request: Request):
     payload["locked"] = state.locked
     payload["pin_set"] = applock.has_pin()
     payload["pin_skipped"] = applock.pin_skipped()
+    payload["pin_recovery"] = bool(payload.get("authorized")) and applock.has_pin()
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
@@ -552,6 +611,51 @@ async def pin_skip(request: Request):
     return {"skipped": True}
 
 
+@app.post("/api/pin/recover")
+async def pin_recover(request: Request):
+    state = _state(request)
+    if not applock.has_pin():
+        raise TGError("There is no PIN to reset.")
+    if not state.service.status().get("authorized"):
+        raise TGError("Sign in to Telegram first; the recovery code is delivered there.")
+    wait = applock.recovery_wait()
+    if wait:
+        raise TGError(f"Wait {wait} seconds before asking for another code.")
+    code = applock.issue_recovery_code()
+    try:
+        message_id = await state.service.send_self_message(
+            "Telegram File Explorer recovery code: "
+            f"{code}\n\n"
+            "Enter it on the lock screen within 10 minutes to set a new PIN. "
+            "If you did not ask for this, ignore it and change your Telegram password."
+        )
+    except Exception as exc:
+        applock.cancel_recovery()
+        raise TGError(friendly_error(exc))
+    log.info("PIN recovery code sent to Saved Messages (message %s)", message_id)
+    return {
+        "sent": True,
+        "delivery": "Saved Messages",
+        "retry_after": applock.RECOVERY_COOLDOWN,
+    }
+
+
+@app.post("/api/pin/reset")
+async def pin_reset(body: PinResetBody, request: Request):
+    state = _state(request)
+    if not applock.has_pin():
+        raise TGError("There is no PIN to reset.")
+    if not applock.PIN_RE.fullmatch(body.pin or ""):
+        raise TGError("The PIN must be exactly 4 digits.")
+    if not applock.verify_recovery_code((body.code or "").strip()):
+        await asyncio.sleep(1.2)
+        raise TGError("Wrong or expired code. Ask for a new code.")
+    applock.set_pin(body.pin)
+    state.locked = False
+    log.info("PIN reset with a Telegram recovery code")
+    return {"pin_set": True, "unlocked": True}
+
+
 @app.post("/api/bot/start")
 async def bot_start(request: Request):
     supervisor = _state(request).bot
@@ -564,12 +668,44 @@ async def bot_stop(request: Request):
     return JSONResponse({"bot": await run_in_threadpool(supervisor.turn_off)})
 
 
+def _thumb_cached(item_id: int) -> bool:
+    return (
+        appconfig.THUMB_DIR / f"{item_id}.thumb"
+    ).is_file() or thumbpick.custom_path(item_id).is_file()
+
+
+def _custom_thumb_ids() -> List[int]:
+    ids: List[int] = []
+    try:
+        for path in appconfig.THUMB_DIR.glob("*.custom.jpg"):
+            head = path.name.split(".", 1)[0]
+            if head.isdigit():
+                ids.append(int(head))
+    except OSError:
+        pass
+    return ids
+
+
+def _folders_with_covers(state, chat_id) -> List[Dict[str, Any]]:
+    folders = state.catalog.folders(chat_id)
+    covers = state.catalog.folder_covers(chat_id, has_thumb_file=_thumb_cached)
+    for entry in folders:
+        entry["covers"] = [
+            {
+                "url": f"/api/thumb/{cover['id']}?v={cover['version']}",
+                "kind": cover["kind"],
+            }
+            for cover in covers.get(entry["folder"].lower(), [])
+        ]
+    return folders
+
+
 @app.get("/api/nav")
 async def nav(request: Request):
     state = _state(request)
     chat_id = _chat_id(state)
     payload = {
-        "folders": state.catalog.folders(chat_id),
+        "folders": _folders_with_covers(state, chat_id),
         "tags": state.catalog.tags(chat_id)[:120],
         "kinds": state.catalog.kinds(chat_id),
         "stats": state.catalog.stats(chat_id),
@@ -581,19 +717,21 @@ async def nav(request: Request):
 @app.post("/api/folders")
 async def create_folder(body: FolderBody, request: Request):
     state = _state(request)
+    chat_id = _chat_id(state)
     try:
-        name = await run_in_threadpool(state.catalog.create_folder, body.name)
+        name = await run_in_threadpool(
+            state.catalog.create_folder, body.name, chat_id
+        )
         if body.icon is not None or body.note is not None:
             await run_in_threadpool(
-                state.catalog.set_folder_meta, name, body.icon, body.note
+                state.catalog.set_folder_meta, name, body.icon, body.note, chat_id
             )
     except ValueError as exc:
         raise TGError(str(exc))
-    chat_id = _chat_id(state)
     return {
         "folder": name,
         "info": state.catalog.folder_info(name, chat_id),
-        "folders": state.catalog.folders(chat_id),
+        "folders": _folders_with_covers(state, chat_id),
     }
 
 
@@ -606,7 +744,7 @@ async def update_folder(body: FolderPatch, request: Request):
         old = clean_folder_path(body.name, "")
         try:
             name = await run_in_threadpool(
-                state.catalog.rename_folder, body.name, body.new_name
+                state.catalog.rename_folder, body.name, body.new_name, chat_id
             )
         except ValueError as exc:
             raise TGError(str(exc))
@@ -623,14 +761,14 @@ async def update_folder(body: FolderPatch, request: Request):
     if body.icon is not None or body.note is not None:
         try:
             await run_in_threadpool(
-                state.catalog.set_folder_meta, name, body.icon, body.note
+                state.catalog.set_folder_meta, name, body.icon, body.note, chat_id
             )
         except ValueError as exc:
             raise TGError(str(exc))
     return {
         "folder": name,
         "info": state.catalog.folder_info(name, chat_id),
-        "folders": state.catalog.folders(chat_id),
+        "folders": _folders_with_covers(state, chat_id),
     }
 
 
@@ -646,10 +784,12 @@ async def folder_info(request: Request, name: str = Query(..., max_length=180)):
 @app.delete("/api/folders")
 async def delete_folder(request: Request, name: str = Query(..., max_length=180)):
     state = _state(request)
-    removed = await run_in_threadpool(state.catalog.delete_folder, name)
+    removed = await run_in_threadpool(
+        state.catalog.delete_folder, name, _chat_id(state)
+    )
     if not removed:
         raise TGError("Only empty folders can be removed.")
-    return {"deleted": True, "folders": state.catalog.folders(_chat_id(state))}
+    return {"deleted": True, "folders": _folders_with_covers(state, _chat_id(state))}
 
 
 ZIP64_LIMIT = 0xFFFFFFFF
@@ -952,6 +1092,60 @@ async def set_vault(body: VaultBody, request: Request):
     return state.service.status()
 
 
+@app.get("/api/vaults")
+async def list_vaults(request: Request, refresh: bool = False):
+    state = _state(request)
+    info = state.service.status()
+    if not info["authorized"]:
+        return JSONResponse(
+            {"vaults": info.get("vaults") or [], "vault": info.get("vault")},
+            headers={"Cache-Control": "no-store"},
+        )
+    entries = await state.service.list_vaults(refresh)
+    return JSONResponse(
+        {"vaults": entries, "vault": state.service.status().get("vault")},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def _after_vault_change(state: Any) -> Dict[str, Any]:
+    chat_id = _chat_id(state)
+    if chat_id is not None:
+        await run_in_threadpool(state.catalog.adopt_unscoped_folders, chat_id)
+    _spawn(state, _sync_and_snapshot(state))
+    await asyncio.sleep(0)
+    info = state.service.status()
+    return {
+        "vault": info.get("vault"),
+        "vaults": info.get("vaults"),
+        "sync": info.get("sync"),
+    }
+
+
+@app.post("/api/vaults/switch")
+async def switch_vault(body: VaultSwitchBody, request: Request):
+    state = _state(request)
+    if not body.id.strip():
+        raise TGError("Choose a vault first.")
+    await state.service.set_vault(body.id)
+    return await _after_vault_change(state)
+
+
+@app.post("/api/vaults/create")
+async def create_vault(body: VaultCreateBody, request: Request):
+    state = _state(request)
+    result = await state.service.create_vault(body.name)
+    data = await _after_vault_change(state)
+    data["bot"] = result.get("bot")
+    return data
+
+
+@app.post("/api/vaults/bot")
+async def add_vault_bot(body: VaultBotBody, request: Request):
+    state = _state(request)
+    return await state.service.add_helper_bot(body.id.strip() or None)
+
+
 @app.get("/api/channels")
 async def channels(request: Request, q: str = Query("", max_length=100)):
     state = _state(request)
@@ -989,7 +1183,13 @@ async def reconnect(request: Request):
 
 
 @app.post("/api/quit")
-async def quit_app():
+async def quit_app(request: Request):
+    state = _state(request)
+    state.bot.shutdown()
+    try:
+        await run_in_threadpool(botsup.terminate)
+    except Exception:
+        log.exception("Could not stop the storage bot during quit")
     QUIT.set()
     return {"quitting": True}
 
@@ -1011,7 +1211,8 @@ async def sync_now(request: Request):
 
 
 async def _sync_and_snapshot(state) -> None:
-    await state.service.sync(state.catalog, state.bot_db)
+    if not await state.service.sync(state.catalog, state.bot_db):
+        return
     info = state.service.status()
     if not (info["authorized"] and info.get("vault")):
         return
@@ -1027,14 +1228,20 @@ async def _sync_and_snapshot(state) -> None:
 
 
 async def _hide_snapshots(state) -> None:
+    chat_id = _chat_id(state)
     result = await run_in_threadpool(
         state.catalog.list,
         q=vaultstore.PREFIX,
         limit=50,
-        chat_id=_chat_id(state),
+        chat_id=chat_id,
     )
     for item in result.get("items", []):
         await run_in_threadpool(state.catalog.hide, item["id"])
+    removed = await run_in_threadpool(
+        state.catalog.prune_snapshots, chat_id, vaultstore.KEEP
+    )
+    if removed:
+        log.info("Removed %d stale snapshot row(s) from the library", removed)
 
 
 async def _hide_snapshots_quietly(state) -> None:
@@ -1042,6 +1249,15 @@ async def _hide_snapshots_quietly(state) -> None:
         await _hide_snapshots(state)
     except Exception:
         log.exception("Could not hide vault data snapshots at startup")
+
+
+async def _prime_vaults(state) -> None:
+    """Discover storage channels in the background as soon as the app opens."""
+    try:
+        entries = await state.service.list_vaults(refresh=True)
+        log.info("Found %d storage vault(s)", len(entries))
+    except Exception as exc:
+        log.warning("Could not scan for storage vaults: %s", friendly_error(exc))
 
 
 @app.get("/api/sync")
@@ -1126,7 +1342,9 @@ async def patch_item(item_id: int, body: ItemPatch, request: Request):
         if state.service.is_bot_vault():
             Catalog.sync_to_bot(state.bot_db, item["message_id"], name=item["name"])
         try:
-            await state.service.edit_caption(item["message_id"], item["name"])
+            await state.service.edit_caption(
+                item["message_id"], item["name"], item.get("chat_id")
+            )
         except TGError as exc:
             warning = (
                 "Renamed in the explorer, but the Telegram caption could not be "
@@ -1167,18 +1385,240 @@ async def patch_item(item_id: int, body: ItemPatch, request: Request):
     }
 
 
+@app.post("/api/items/{item_id}/position")
+async def save_position(item_id: int, body: PlaybackBody, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    position = max(0.0, float(body.position or 0))
+    duration = float(body.duration or item.get("duration") or 0)
+    # Finished files start from the beginning next time.
+    if duration and position >= duration - 5:
+        position = 0.0
+    await run_in_threadpool(
+        state.catalog.update,
+        item_id,
+        play_pos=round(position, 2),
+        played_at=datetime.now().isoformat(timespec="seconds") if position else "",
+    )
+    return {"saved": True, "play_pos": position}
+
+
+@app.get("/api/tools")
+async def tools_status():
+    return mediatools.status()
+
+
+@app.post("/api/tools/{tool}/install")
+async def tools_install(tool: str):
+    try:
+        return mediatools.install(tool)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown media tool.")
+
+
+@app.post("/api/items/{item_id}/mpv")
+async def open_in_mpv(item_id: int, body: MpvBody, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    if mediatools.tool_path("mpv") is None:
+        raise HTTPException(status_code=409, detail="mpv is not installed yet.")
+    url = f"{request.base_url}api/stream/{item_id}"
+    position = float(body.position or item.get("play_pos") or 0)
+    try:
+        await run_in_threadpool(
+            mediatools.launch_mpv,
+            url,
+            item.get("name") or "Video",
+            position,
+            state.key,
+        )
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not start mpv: {exc}")
+    return {"launched": True}
+
+
+@app.get("/api/storyboard/{item_id}")
+async def storyboard_info(item_id: int, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    url = f"{request.base_url}api/stream/{item_id}"
+    return await run_in_threadpool(storyboard.describe, item, url, state.key)
+
+
+@app.get("/api/storyboard/{item_id}/sprite.jpg")
+async def storyboard_sprite(item_id: int, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    sprite = storyboard.sprite_path(item)
+    if not sprite.is_file():
+        raise HTTPException(status_code=404, detail="No preview sheet yet.")
+    return FileResponse(
+        sprite, media_type="image/jpeg", headers={"Cache-Control": "max-age=3600"}
+    )
+
+
+# --------------------------------------------------------------- thumb picker
+def _picker_payload(item_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
+    if data.get("state") == "ready":
+        data["candidates"] = [
+            {
+                "index": index,
+                "time": second,
+                "url": f"/api/thumb-picker/{item_id}/{index}?v={data['version']}",
+            }
+            for index, second in enumerate(data.get("times") or [], start=1)
+        ]
+        data["custom"] = thumbpick.custom_path(item_id).is_file()
+    return data
+
+
+@app.get("/api/thumb-picker/{item_id}")
+async def thumb_picker_info(item_id: int, request: Request, force: bool = False):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    if force:
+        await run_in_threadpool(thumbpick.reset, item)
+    url = f"{request.base_url}api/stream/{item_id}"
+    data = await run_in_threadpool(thumbpick.describe, item, url, state.key)
+    return _picker_payload(item_id, data)
+
+
+@app.post("/api/thumb-picker/{item_id}/shuffle")
+async def thumb_picker_shuffle(item_id: int, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    url = f"{request.base_url}api/stream/{item_id}"
+    data = await run_in_threadpool(thumbpick.describe, item, url, state.key, True)
+    return _picker_payload(item_id, data)
+
+
+@app.get("/api/thumb-picker/{item_id}/{index}")
+async def thumb_picker_frame(item_id: int, index: int, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    path = thumbpick.frame_path(item, index)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="That frame is not ready.")
+    return FileResponse(
+        path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"}
+    )
+
+
+@app.post("/api/thumb-picker/{item_id}/select")
+async def thumb_picker_select(item_id: int, body: ThumbPickBody, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    try:
+        await run_in_threadpool(thumbpick.select, item, body.index)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError:
+        raise HTTPException(status_code=409, detail="Generate the frames first.")
+    updated = await run_in_threadpool(
+        state.catalog.update,
+        item_id,
+        has_thumb=1,
+        thumb_version=int(time.time()),
+    )
+    return public_item(updated or item, _vault(state.service.status()))
+
+
 @app.delete("/api/items/{item_id}")
 async def delete_item(item_id: int, request: Request, remote: bool = False):
     state = _state(request)
     item = await _scoped_item(state, item_id)
     if remote:
-        await state.service.delete_message(item["message_id"])
+        await state.service.delete_message(item["message_id"], item.get("chat_id"))
         await run_in_threadpool(state.catalog.delete, item_id)
         if state.service.is_bot_vault():
             Catalog.clear_bot_vault(state.bot_db, item["message_id"])
         return {"deleted": True, "remote": True, "item_id": item_id}
     await run_in_threadpool(state.catalog.hide, item_id)
     return {"deleted": True, "remote": False, "item_id": item_id}
+
+
+@app.post("/api/items/{item_id}/reupload")
+async def reupload_item(item_id: int, request: Request):
+    """Download a stored document and send it again as media (video/audio)."""
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    if item.get("kind") != "document" or parse_part_name(item.get("name") or ""):
+        raise TGError("Only single stored files can be re-uploaded.")
+    info = state.service.status()
+    if not (info["authorized"] and info.get("vault")):
+        raise TGError("Log in and choose your channel before uploading.")
+    transfer_id = state.service.new_transfer(
+        item.get("name") or "file", int(item.get("size") or 0)
+    )
+    _spawn(state, _reupload_item(state, item, transfer_id))
+    await asyncio.sleep(0)
+    return {"transfer": state.service.transfers[transfer_id]}
+
+
+async def _reupload_item(state: Any, item: Dict[str, Any], transfer_id: str) -> None:
+    transfer = state.service.transfers.get(transfer_id)
+    workdir = appconfig.CACHE_DIR / "reupload" / transfer_id
+    try:
+        workdir.mkdir(parents=True, exist_ok=True)
+        path = workdir / (item.get("name") or "file")
+        message = await state.service.get_message(
+            int(item["message_id"]), item.get("chat_id")
+        )
+        if message is None:
+            raise TGError("This file no longer exists in the channel.")
+
+        def progress(sent: int, total: int) -> None:
+            if transfer is not None and transfer.get("cancel"):
+                raise TransferCancelled()
+            if transfer is not None:
+                transfer.update(
+                    state="downloading",
+                    sent=int(sent or 0),
+                    size=int(total or transfer["size"] or 0),
+                )
+
+        await state.service.download_to(message, path, progress)
+        kind, _ = media_hint(path, item.get("name") or "")
+        if kind == "document":
+            raise TGError("That file is not a video, audio or image.")
+        if transfer is not None and transfer.get("cancel"):
+            raise TransferCancelled()
+        if transfer is not None:
+            transfer.update(state="uploading", sent=0)
+        fresh = await state.service.upload_one(
+            {
+                "path": str(path),
+                "name": item.get("name") or path.name,
+                "folder": item.get("folder") or "",
+                "transfer_id": transfer_id,
+            },
+            state.catalog,
+        )
+        keep: Dict[str, Any] = {}
+        for key in ("tags", "tags_source", "note"):
+            if item.get(key):
+                keep[key] = item[key]
+        if item.get("favorite"):
+            keep["favorite"] = item["favorite"]
+            keep["fav_source"] = item.get("fav_source") or "user"
+        if keep and fresh.get("id"):
+            await run_in_threadpool(state.catalog.update, fresh["id"], **keep)
+        await state.service.delete_message(item["message_id"], item.get("chat_id"))
+        await run_in_threadpool(state.catalog.delete, item["id"])
+        if state.service.is_bot_vault():
+            Catalog.clear_bot_vault(state.bot_db, item["message_id"])
+    except TransferCancelled:
+        if transfer is not None:
+            transfer.update(state="cancelled", error=None)
+    except Exception as exc:
+        message = friendly_error(exc)
+        if transfer is not None:
+            transfer.update(state="error", error=message)
+        log.warning("Re-upload failed for %s: %s", item.get("name"), message)
+    finally:
+        if transfer is not None:
+            transfer["busy"] = False
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 BATCH_LIMIT = 300
@@ -1219,7 +1659,7 @@ async def batch_delete(body: BatchDeleteBody, request: Request):
     removed = 0
     if body.remote:
         for item in items:
-            await state.service.delete_message(item["message_id"])
+            await state.service.delete_message(item["message_id"], item.get("chat_id"))
             await run_in_threadpool(state.catalog.delete, item["id"])
             if state.service.is_bot_vault():
                 Catalog.clear_bot_vault(state.bot_db, item["message_id"])
@@ -1397,7 +1837,9 @@ async def _discard_transfer_items(state: Any, transfer: Dict[str, Any]) -> None:
         if item is None:
             continue
         try:
-            await state.service.delete_message(item["message_id"])
+            await state.service.delete_message(
+                item["message_id"], item.get("chat_id")
+            )
         except TGError as exc:
             log.warning("Could not remove cancelled part %s: %s", item_id, exc)
             continue
@@ -1461,6 +1903,8 @@ async def _run_uploads(state: Any, entries: List[Dict[str, Any]]) -> None:
                 transfer.update(state="error", error=message)
             log.warning("Upload failed for %s: %s", entry["name"], message)
         finally:
+            if transfer is not None:
+                transfer["busy"] = False
             path = original
             try:
                 path.unlink(missing_ok=True)
@@ -1600,6 +2044,9 @@ async def _run_merge(state: Any, job: Dict[str, Any]) -> None:
         log.warning("Merge failed for %s: %s", job.get("name"), message)
         state.merge_jobs.pop(job["id"], None)
         shutil.rmtree(job["dir"], ignore_errors=True)
+    finally:
+        if transfer is not None:
+            transfer["busy"] = False
 
 
 @app.get("/api/merged/{job_id}")
@@ -1629,6 +2076,14 @@ async def merged_download(job_id: str, request: Request):
 async def thumb(item_id: int, request: Request):
     state = _state(request)
     item = await _scoped_item(state, item_id)
+    custom = thumbpick.custom_path(item_id)
+    if custom.is_file():
+        data = await run_in_threadpool(custom.read_bytes)
+        return Response(
+            content=data,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
     cache = appconfig.THUMB_DIR / f"{item_id}.thumb"
     if cache.exists():
         data = await run_in_threadpool(cache.read_bytes)
@@ -1679,9 +2134,10 @@ async def download_head(item_id: int, request: Request):
     return await _serve_media(request, item_id, download=True)
 
 
-# Video previews only need the beginning of a file; without a cap Chromium's
-# open-ended "bytes=0-" request makes the server relay the whole video.
-INLINE_STREAM_WINDOW = 8 * 1024 * 1024
+# Players ask for "bytes=0-"; serving a large slice up front gives them a
+# comfortable buffer instead of a stream of tiny requests. Blocks are cached
+# on disk by streamcache, so repeats and seeks stay local.
+INLINE_STREAM_WINDOW = 32 * 1024 * 1024
 
 
 async def _serve_media(request: Request, item_id: int, download: bool) -> Response:
@@ -1720,7 +2176,25 @@ async def _serve_media(request: Request, item_id: int, download: bool) -> Respon
     if request.method == "HEAD":
         return Response(status_code=status_code, headers=headers, media_type=mime)
 
+    cache_key = f"{item.get('chat_id')}-{item['message_id']}-{size}"
+    can_cache = not download and size > 4 * 1024 * 1024
+
     async def body() -> AsyncIterator[bytes]:
+        sent = 0
+        if can_cache:
+            try:
+                async for chunk in streamcache.read(
+                    state.service, message, cache_key, start, length, size
+                ):
+                    if QUIT.is_set():
+                        return
+                    sent += len(chunk)
+                    yield chunk
+                return
+            except OSError:
+                # Cache trouble mid-stream: the client reconnects and retries.
+                if sent:
+                    return
         async for chunk in state.service.stream_chunks(message, start, length):
             if QUIT.is_set():
                 return

@@ -3,8 +3,8 @@
 The bot runs as its own process (TelegramFileBot.exe, or bot.py under the
 project's venv while developing) and reads its own .env, so the Explorer
 never touches the bot token. The supervisor only starts, stops and watches
-it. The bot keeps running after the Explorer closes; the next launch simply
-adopts it.
+it. Quitting the Explorer stops the bot too, and the next launch starts it
+again.
 """
 
 from __future__ import annotations

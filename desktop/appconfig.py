@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 APP_NAME = "TelegramFileExplorer"
 APP_TITLE = "Telegram File Explorer"
@@ -30,11 +30,15 @@ DEFAULTS: Dict[str, Any] = {
     "api_hash": "",
     "vault": "",
     "vault_title": "",
+    "vaults": "[]",
+    "helper_bot": "",
     "run_bot": "1",
     "pin_salt": "",
     "pin_hash": "",
     "pin_skipped": "",
 }
+
+VAULT_LIMIT = 50
 
 _sizes = ("B", "KB", "MB", "GB", "TB")
 
@@ -100,6 +104,47 @@ def clear_session_files() -> None:
             Path(str(SESSION_PATH) + suffix).unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _clean_vault(entry: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    try:
+        vault_id = str(int(entry.get("id")))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    title = str(entry.get("title") or vault_id).strip()[:128] or vault_id
+    username = str(entry.get("username") or "").strip()[:64]
+    return {"id": vault_id, "title": title, "username": username}
+
+
+def load_vaults() -> List[Dict[str, str]]:
+    raw = load_settings().get("vaults")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    if not isinstance(raw, list):
+        return []
+    found: List[Dict[str, str]] = []
+    seen = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        entry = _clean_vault(item)
+        if entry is not None and entry["id"] not in seen:
+            seen.add(entry["id"])
+            found.append(entry)
+    return found[:VAULT_LIMIT]
+
+
+def remember_vault(vault: Dict[str, Any]) -> List[Dict[str, str]]:
+    entry = _clean_vault(vault)
+    if entry is None:
+        return load_vaults()
+    entries = [item for item in load_vaults() if item["id"] != entry["id"]]
+    entries.insert(0, entry)
+    save_settings({"vaults": json.dumps(entries[:VAULT_LIMIT])})
+    return entries[:VAULT_LIMIT]
 
 
 def human_size(size: Optional[int]) -> str:

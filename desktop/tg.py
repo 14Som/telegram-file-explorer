@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import json
+import logging
 import mimetypes
 import os
 import shutil
@@ -19,7 +21,15 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
 import segno
 from telethon import TelegramClient, errors, types, utils
+from telethon.tl.functions.channels import (
+    CreateChannelRequest,
+    EditAdminRequest,
+    GetFullChannelRequest,
+    InviteToChannelRequest,
+)
 from telethon.tl.types import (
+    ChannelParticipantsAdmins,
+    ChatAdminRights,
     DocumentAttributeAnimated,
     DocumentAttributeAudio,
     DocumentAttributeFilename,
@@ -31,9 +41,25 @@ from telethon.tl.types import (
 from . import appconfig
 from .catalog import Catalog, clean_folder_path, clean_name, default_folder
 
+log = logging.getLogger("tfe.tg")
+
 APP_VERSION = "1.0"
 MAX_UPLOAD = 2 * 1024 * 1024 * 1024
 PREMIUM_MAX_UPLOAD = 4 * 1024 * 1024 * 1024
+# Every channel the Explorer creates for storage carries this marker in its
+# description, so a fresh install can find the vaults again.
+VAULT_MARKER = "Telegram File Explorer vault"
+VAULT_ABOUT = (
+    f"{VAULT_MARKER}. Files stay in this channel; the app keeps an index on "
+    "your PC and a copy of the index here."
+)
+ACTIVE_TRANSFER_STATES = {
+    "queued",
+    "uploading",
+    "splitting",
+    "downloading",
+    "merging",
+}
 # Largest single Telegram upload that actually succeeds: the server allows
 # at most 4000 upload parts of 512 KiB per file, so an exactly-2-GiB volume
 # (4096 parts) is rejected with FilePartsInvalidError. Split parts must stay
@@ -67,6 +93,77 @@ _LABELS = {
     "gif": "Animation",
     "other": "File",
 }
+
+
+def sniff_media(path: Path) -> Tuple[str, Optional[str]]:
+    """Identify video/audio/image from the file header.
+
+    Files without a known extension are otherwise sent to Telegram as plain
+    documents, which clients cannot stream or preview.
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(4096)
+    except OSError:
+        return "document", None
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand == b"qt  ":
+            return "video", "video/quicktime"
+        if brand in (b"M4A ", b"M4B ", b"M4P "):
+            return "audio", "audio/mp4"
+        return "video", "video/mp4"
+    if head[:4] == b"\x1aE\xdf\xa3":
+        return ("video", "video/webm") if b"webm" in head[:64].lower() else (
+            "video",
+            "video/x-matroska",
+        )
+    if head[:4] == b"RIFF":
+        if head[8:12] == b"AVI ":
+            return "video", "video/avi"
+        if head[8:12] == b"WAVE":
+            return "audio", "audio/wav"
+        if head[8:12] == b"WEBP":
+            return "image", "image/webp"
+    if head[:4] == b"\x30\x26\xb2\x75":
+        return "video", "video/x-ms-wmv"
+    if head[:4] in (b"\x00\x00\x01\xba", b"\x00\x00\x01\xb3"):
+        return "video", "video/mpeg"
+    if head[:3] == b"FLV":
+        return "video", "video/x-flv"
+    if head[:4] == b"OggS":
+        return ("video", "video/ogg") if b"theora" in head.lower() else (
+            "audio",
+            "audio/ogg",
+        )
+    if head[:3] == b"ID3" or head[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return "audio", "audio/mpeg"
+    if head[:4] == b"fLaC":
+        return "audio", "audio/flac"
+    if head[:3] == b"\xff\xd8\xff":
+        return "image", "image/jpeg"
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image", "image/png"
+    if head[:4] == b"GIF8":
+        return "image", "image/gif"
+    if len(head) >= 377 and head[0] == head[188] == head[376] == 0x47:
+        return "video", "video/mp2t"
+    return "document", None
+
+
+def media_hint(path: Path, name: str) -> Tuple[str, Optional[str]]:
+    """Content sniffing first, then the file extension as a fallback."""
+    kind, mime = sniff_media(path)
+    if kind != "document":
+        return kind, mime
+    guess = mimetypes.guess_type(name)[0] or ""
+    if guess.startswith("video/"):
+        return "video", guess
+    if guess.startswith("audio/"):
+        return "audio", guess
+    if guess.startswith("image/"):
+        return "image", guess
+    return "document", None
 
 
 class TGError(Exception):
@@ -187,8 +284,30 @@ class TelegramService:
         self._thumb_locks: Dict[int, asyncio.Lock] = {}
         self._thumb_sem: Optional[asyncio.Semaphore] = None
         self._message_cache: Dict[int, Tuple[float, Any]] = {}
+        self._vault_registry: List[Dict[str, str]] = appconfig.load_vaults()
+        self._vaults_cache: Optional[List[Dict[str, Any]]] = None
+        self._vaults_cache_at = 0.0
+        self._vaults_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ state
+    def _public_vaults(self) -> List[Dict[str, Any]]:
+        active_id = str((self._vault or {}).get("id") or "")
+        entries = [
+            {**vault, "active": vault["id"] == active_id}
+            for vault in self._vault_registry
+        ]
+        if self._vault and not any(entry["active"] for entry in entries):
+            entries.insert(
+                0,
+                {
+                    "id": str(self._vault["id"]),
+                    "title": self._vault.get("title") or str(self._vault["id"]),
+                    "username": self._vault.get("username") or "",
+                    "active": True,
+                },
+            )
+        return entries[: appconfig.VAULT_LIMIT]
+
     def status(self) -> Dict[str, Any]:
         return {
             "app": "telegram-file-explorer",
@@ -198,6 +317,7 @@ class TelegramService:
             "user": self._user,
             "max_upload": PREMIUM_MAX_UPLOAD if (self._user or {}).get("premium") else MAX_UPLOAD,
             "vault": self._vault,
+            "vaults": self._public_vaults(),
             "vault_configured": bool(self._settings.get("vault")),
             "has_api": bool(self._settings.get("api_id") and self._settings.get("api_hash")),
             "quick_api": True,
@@ -282,6 +402,14 @@ class TelegramService:
             raise TGError("Choose your Telegram channel first.")
         return client
 
+    async def send_self_message(self, text: str) -> int:
+        """Post text to the account's Saved Messages (readable on any device)."""
+        client = self._require_client()
+        if not self._authorized:
+            raise TGError("Sign in to Telegram first.")
+        message = await client.send_message("me", text)
+        return int(getattr(message, "id", 0) or 0)
+
     # ------------------------------------------------------------------ login
     async def configure(
         self, api_id: str = "", api_hash: str = "", vault: str = ""
@@ -320,17 +448,66 @@ class TelegramService:
         return self.status()
 
     async def set_vault(self, vault: str) -> Dict[str, Any]:
+        """Switch the storage vault (channel) used by every operation."""
         self._last_error = None
-        if self.sync_state.get("running"):
-            raise TGError("Wait for the current sync to finish before changing channels.")
+        blocker = self._switch_blocker()
+        if blocker:
+            raise TGError(blocker)
         if not self._authorized:
             raise TGError("Log in first.")
-        self._settings = appconfig.save_settings({"vault": str(vault).strip()})
-        self._entity = None
-        self._vault = None
-        await self._resolve_vault()
+        raw = str(vault or "").strip()
+        if not raw:
+            raise TGError("Choose a channel first.")
+        entity, info = await self._resolve_target(raw)
+        self._activate_vault(entity, info)
         self._state = "ready"
+        self._last_error = None
         return self.status()
+
+    def _switch_blocker(self) -> Optional[str]:
+        if self.sync_state.get("running"):
+            return "Wait for the current sync to finish before changing vaults."
+        for transfer in self.transfers.values():
+            if transfer.get("busy") or transfer.get("state") in ACTIVE_TRANSFER_STATES:
+                return "Wait for the current uploads and downloads to finish before changing vaults."
+        return None
+
+    def _activate_vault(self, entity: Any, info: Dict[str, Any]) -> None:
+        self._entity = entity
+        self._vault = info
+        self._settings = appconfig.save_settings(
+            {"vault": str(info["id"]), "vault_title": info["title"]}
+        )
+        self._remember_vault(info)
+        # Message ids repeat across channels, so a cached message from the
+        # previous vault must never be served after a switch.
+        self._message_cache.clear()
+        self.sync_state = {
+            "running": False,
+            "scanned": 0,
+            "total": 0,
+            "stored": 0,
+            "imported": 0,
+            "error": None,
+            "started": None,
+            "finished": None,
+        }
+
+    def _remember_vault(self, info: Dict[str, Any]) -> None:
+        entry = {
+            "id": str(info.get("id")),
+            "title": str(info.get("title") or info.get("id")),
+            "username": str(info.get("username") or ""),
+        }
+        try:
+            self._vault_registry = appconfig.remember_vault(entry)
+        except OSError:
+            self._vault_registry = [
+                item for item in self._vault_registry if item["id"] != entry["id"]
+            ]
+            self._vault_registry.insert(0, entry)
+        self._vaults_cache = None
+        self._vaults_cache_at = 0.0
 
     async def send_code(self, phone: str) -> Dict[str, Any]:
         self._last_error = None
@@ -547,24 +724,27 @@ class TelegramService:
         return self.status()
 
     # ---------------------------------------------------------------- channel
-    async def _resolve_vault(self) -> None:
+    @staticmethod
+    def _normalize_target(raw: str) -> str:
+        value = str(raw or "").strip()
+        if value.startswith("http://") or value.startswith("https://"):
+            value = value.split("://", 1)[1]
+        if value.startswith("t.me/"):
+            parts = value.split("?", 1)[0].split("#", 1)[0].split("/")
+            value = parts[1] if len(parts) > 1 else ""
+            if value == "c" and len(parts) > 2:
+                value = parts[2]
+        if value.startswith("@") and not value.startswith("@+"):
+            value = value[1:]
+        return value.strip()
+
+    async def _resolve_target(self, raw: str) -> Tuple[Any, Dict[str, Any]]:
         client = self._require_client()
-        raw = str(self._settings.get("vault") or "").strip()
-        if raw.startswith("http://") or raw.startswith("https://"):
-            raw = raw.split("://", 1)[1]
-        if raw.startswith("t.me/"):
-            parts = raw.split("?", 1)[0].split("#", 1)[0].split("/")
-            raw = parts[1] if len(parts) > 1 else ""
-            if raw == "c" and len(parts) > 2:
-                raw = parts[2]
-        if raw.startswith("@") and not raw.startswith("@+"):
-            raw = raw[1:]
-        if not raw:
+        value = self._normalize_target(raw)
+        if not value:
             raise TGError("Choose the Telegram channel that stores your files.")
-        if not self._authorized:
-            return
         try:
-            number = int(raw)
+            number = int(value)
         except ValueError:
             number = None
         try:
@@ -574,7 +754,7 @@ class TelegramService:
                 except Exception:
                     entity = await client.get_entity(number)
             else:
-                entity = await client.get_entity(number if number is not None else raw)
+                entity = await client.get_entity(number if number is not None else value)
         except Exception as exc:
             raise TGError(
                 "Could not open that channel. Make sure this account is a member."
@@ -584,15 +764,320 @@ class TelegramService:
         peer_id = utils.get_peer_id(entity)
         title = entity.title or str(peer_id)
         username = getattr(entity, "username", None) or ""
-        self._entity = entity
-        self._vault = {
+        return entity, {
             "id": peer_id,
             "channel_id": entity.id,
             "title": title,
             "username": username,
         }
-        saved = appconfig.save_settings({"vault": str(peer_id), "vault_title": title})
-        self._settings = saved
+
+    async def _resolve_vault(self) -> None:
+        raw = str(self._settings.get("vault") or "").strip()
+        if not raw:
+            raise TGError("Choose the Telegram channel that stores your files.")
+        if not self._authorized:
+            return
+        entity, info = await self._resolve_target(raw)
+        self._activate_vault(entity, info)
+
+    def _active_chat_id(self) -> Optional[int]:
+        try:
+            return int((self._vault or {}).get("channel_id"))
+        except (TypeError, ValueError):
+            return None
+
+    async def list_vaults(self, refresh: bool = False) -> List[Dict[str, Any]]:
+        """Return every known storage channel, scanning Telegram when needed."""
+        client = self._require_client()
+        if not self._authorized:
+            raise TGError("Log in first.")
+        now = time.time()
+        if (
+            not refresh
+            and self._vaults_cache is not None
+            and now - self._vaults_cache_at < 120
+        ):
+            return [
+                {**entry, "active": entry["id"] == str((self._vault or {}).get("id") or "")}
+                for entry in self._vaults_cache
+            ]
+        async with self._vaults_lock:
+            if (
+                not refresh
+                and self._vaults_cache is not None
+                and time.time() - self._vaults_cache_at < 120
+            ):
+                return [
+                    {**entry, "active": entry["id"] == str((self._vault or {}).get("id") or "")}
+                    for entry in self._vaults_cache
+                ]
+            merged: Dict[str, Dict[str, str]] = {
+                entry["id"]: dict(entry) for entry in self._vault_registry
+            }
+            if self._vault:
+                merged[str(self._vault["id"])] = {
+                    "id": str(self._vault["id"]),
+                    "title": self._vault.get("title") or str(self._vault["id"]),
+                    "username": self._vault.get("username") or "",
+                }
+            try:
+                await self._scan_vaults(client, merged)
+            except Exception as exc:
+                if not merged:
+                    raise TGError(friendly_error(exc))
+                log.warning("Vault scan incomplete: %s", friendly_error(exc))
+            active_id = str((self._vault or {}).get("id") or "")
+            entries = list(merged.values())
+            entries.sort(
+                key=lambda entry: (
+                    entry["id"] != active_id,
+                    entry["title"].casefold(),
+                )
+            )
+            self._vault_registry = entries[: appconfig.VAULT_LIMIT]
+            try:
+                appconfig.save_settings(
+                    {"vaults": json.dumps(self._vault_registry)}
+                )
+            except OSError:
+                pass
+            self._vaults_cache = [dict(entry) for entry in self._vault_registry]
+            self._vaults_cache_at = time.time()
+            return [
+                {**entry, "active": entry["id"] == active_id}
+                for entry in self._vault_registry
+            ]
+
+    async def _scan_vaults(
+        self, client: TelegramClient, found: Dict[str, Dict[str, str]]
+    ) -> None:
+        active_id = str((self._vault or {}).get("id") or "")
+        candidates: List[Any] = []
+        async for dialog in client.iter_dialogs(limit=500):
+            entity = dialog.entity
+            if not isinstance(entity, types.Channel) or getattr(entity, "left", False):
+                continue
+            if not (getattr(entity, "creator", False) or getattr(entity, "admin_rights", None)):
+                continue
+            if str(utils.get_peer_id(entity)) in found:
+                continue
+            candidates.append(entity)
+            if len(candidates) >= 40:
+                break
+        for entity in candidates:
+            vault_id = str(utils.get_peer_id(entity))
+            marked = vault_id == active_id or await self._looks_like_vault(
+                client, entity
+            )
+            if marked:
+                found[vault_id] = {
+                    "id": vault_id,
+                    "title": entity.title or vault_id,
+                    "username": getattr(entity, "username", None) or "",
+                }
+
+    async def _looks_like_vault(self, client: TelegramClient, entity: Any) -> bool:
+        about = str(getattr(entity, "about", "") or "")
+        if VAULT_MARKER.casefold() in about.casefold():
+            return True
+        try:
+            full = await client(GetFullChannelRequest(channel=entity))
+            about = str(getattr(getattr(full, "full_chat", None), "about", "") or "")
+            if VAULT_MARKER.casefold() in about.casefold():
+                return True
+        except Exception:
+            pass
+        # The original vault predates the marker; its data snapshots identify it.
+        try:
+            async for message in client.iter_messages(entity, limit=15, wait_time=0):
+                document = getattr(message, "document", None)
+                for attribute in getattr(document, "attributes", None) or ():
+                    name = getattr(attribute, "file_name", None) or ""
+                    if name.startswith("tfe-data-") and name.endswith(".zip"):
+                        return True
+        except Exception:
+            pass
+        return False
+
+    async def _find_helper_bot(self) -> Optional[Any]:
+        """Find the storage bot: the remembered one, or a bot admin of any vault.
+
+        The bot is a normal user account to the MTProto session, so discovering
+        it from an existing vault's admins avoids ever touching the bot token.
+        """
+        client = self._require_client()
+        username = str(appconfig.load_settings().get("helper_bot") or "").strip().lstrip("@")
+        if username:
+            try:
+                entity = await client.get_entity(username)
+                if getattr(entity, "bot", False):
+                    return entity
+                log.warning("The helper_bot setting @%s is not a bot", username)
+            except Exception as exc:
+                log.warning("Could not resolve helper bot @%s: %s", username, friendly_error(exc))
+
+        candidates: List[Any] = []
+        if self._entity is not None:
+            candidates.append(self._entity)
+        for entry in self._vault_registry:
+            try:
+                entity = await client.get_entity(int(entry["id"]))
+            except Exception:
+                continue
+            if isinstance(entity, types.Channel):
+                candidates.append(entity)
+
+        seen: Set[int] = set()
+        for entity in candidates:
+            entity_id = int(getattr(entity, "id", 0) or 0)
+            if entity_id in seen:
+                continue
+            seen.add(entity_id)
+            try:
+                async for user in client.iter_participants(
+                    entity, filter=ChannelParticipantsAdmins
+                ):
+                    if getattr(user, "bot", False) and getattr(user, "username", None):
+                        appconfig.save_settings({"helper_bot": user.username})
+                        log.info("Storage bot detected: @%s", user.username)
+                        return user
+            except Exception as exc:
+                log.debug(
+                    "Could not inspect admins of %s: %s",
+                    entity_id,
+                    friendly_error(exc),
+                )
+        return None
+
+    async def _promote_helper_bot(self, channel: Any, bot: Any) -> Optional[str]:
+        """Invite the bot and grant posting rights; returns an error text or None."""
+        client = self._require_client()
+        username = getattr(bot, "username", None) or "the storage bot"
+        try:
+            await client(InviteToChannelRequest(channel, [bot]))
+        except errors.UserAlreadyParticipantError:
+            pass
+        except Exception as exc:
+            log.debug("Invite of @%s did not complete: %s", username, friendly_error(exc))
+        try:
+            await client(
+                EditAdminRequest(
+                    channel,
+                    bot,
+                    ChatAdminRights(post_messages=True),
+                    "Storage",
+                )
+            )
+        except Exception as exc:
+            return friendly_error(exc)
+        return None
+
+    async def add_helper_bot(self, vault_id: Optional[str] = None) -> Dict[str, Any]:
+        """Add the storage bot as an admin of a vault (the active one by default)."""
+        client = self._require_client()
+        if not self._authorized:
+            raise TGError("Log in first.")
+        target = self._entity
+        if vault_id:
+            try:
+                target = await client.get_entity(int(vault_id))
+            except Exception as exc:
+                raise TGError(friendly_error(exc))
+        if target is None:
+            raise TGError("Choose a vault first.")
+        bot = await self._find_helper_bot()
+        if bot is None:
+            return {
+                "added": False,
+                "reason": "no_bot",
+                "message": "No storage bot was found. Add the bot to a vault once, then try again.",
+            }
+        error = await self._promote_helper_bot(target, bot)
+        if error:
+            return {
+                "added": False,
+                "reason": "error",
+                "username": bot.username,
+                "message": error,
+            }
+        log.info("Storage bot @%s added to vault %s", bot.username, vault_id or self._vault.get("id"))
+        return {"added": True, "username": bot.username}
+
+    async def create_vault(self, name: str) -> Dict[str, Any]:
+        """Create a private Telegram channel and make it the active vault."""
+        self._last_error = None
+        blocker = self._switch_blocker()
+        if blocker:
+            raise TGError(blocker)
+        client = self._require_client()
+        if not self._authorized:
+            raise TGError("Log in first.")
+        title = " ".join(str(name or "").split()).strip()
+        if not title:
+            raise TGError("Give the new vault a name.")
+        if len(title) > 128:
+            raise TGError("That name is too long (128 characters at most).")
+        try:
+            result = await client(
+                CreateChannelRequest(
+                    title=title,
+                    about=VAULT_ABOUT,
+                    megagroup=False,
+                    broadcast=True,
+                )
+            )
+        except Exception as exc:
+            raise TGError(friendly_error(exc))
+        created = next(
+            (
+                chat
+                for chat in getattr(result, "chats", None) or ()
+                if isinstance(chat, types.Channel)
+            ),
+            None,
+        )
+        if created is None:
+            raise TGError(
+                "Telegram created the channel but did not return it. "
+                "Restart the app to find it."
+            )
+        # Look for the bot while the previous vault is still active, so its
+        # admins can reveal which bot belongs to this setup.
+        try:
+            bot = await self._find_helper_bot()
+        except Exception:
+            log.exception("Could not locate the storage bot for the new vault")
+            bot = None
+        entity, info = await self._resolve_target(str(created.id))
+        self._activate_vault(entity, info)
+        self._state = "ready"
+        self._last_error = None
+        log.info("Created storage vault %s (%s)", info["title"], info["id"])
+        bot_result: Dict[str, Any] = {"added": False, "reason": "no_bot"}
+        if bot is not None:
+            error = await self._promote_helper_bot(entity, bot)
+            if error:
+                bot_result = {
+                    "added": False,
+                    "reason": "error",
+                    "username": bot.username,
+                    "message": error,
+                }
+                log.warning(
+                    "Storage bot could not be added to %s: %s", info["title"], error
+                )
+            else:
+                bot_result = {"added": True, "username": bot.username}
+                log.info(
+                    "Storage bot @%s added to the new vault %s",
+                    bot.username,
+                    info["title"],
+                )
+        return {
+            "vault": self._vault,
+            "vaults": self._public_vaults(),
+            "bot": bot_result,
+        }
 
     async def list_channels(self, query: str = "") -> List[Dict[str, Any]]:
         client = self._require_client()
@@ -625,9 +1110,10 @@ class TelegramService:
         return found
 
     # ------------------------------------------------------------------- sync
-    async def sync(self, catalog: Catalog, bot_db: Path) -> None:
+    async def sync(self, catalog: Catalog, bot_db: Path) -> bool:
+        """Index the active vault; False when another sync is already running."""
         if self.sync_state.get("running"):
-            return
+            return False
         self.sync_state = {
             "running": True,
             "scanned": 0,
@@ -683,6 +1169,7 @@ class TelegramService:
         finally:
             self.sync_state["running"] = False
             self.sync_state["finished"] = datetime.now().isoformat(timespec="seconds")
+        return True
 
     def describe(self, message: Any, chat_id: int) -> Optional[Dict[str, Any]]:
         if message is None:
@@ -788,8 +1275,13 @@ class TelegramService:
         }
 
     # ------------------------------------------------------------------ media
-    async def get_message(self, message_id: int) -> Any:
+    async def get_message(
+        self, message_id: int, chat_id: Optional[int] = None
+    ) -> Any:
         client = self._require_ready()
+        active = self._active_chat_id()
+        if chat_id is not None and active is not None and int(chat_id) != active:
+            raise TGError("That file belongs to another vault. Switch back to it first.")
         cached = self._message_cache.get(int(message_id))
         if cached and time.time() - cached[0] < 600:
             return cached[1]
@@ -838,7 +1330,9 @@ class TelegramService:
             if self._thumb_sem is None:
                 self._thumb_sem = asyncio.Semaphore(4)
             async with self._thumb_sem:
-                message = await self.get_message(int(item["message_id"]))
+                message = await self.get_message(
+                    int(item["message_id"]), item.get("chat_id")
+                )
                 if message is None:
                     return None
                 # For photos index 1 is a small preview; -1 fetches the full image.
@@ -866,7 +1360,9 @@ class TelegramService:
                 return bytes(data), _sniff_image(data)
 
     async def media_info(self, item: Dict[str, Any]) -> Tuple[Any, int, str]:
-        message = await self.get_message(int(item["message_id"]))
+        message = await self.get_message(
+            int(item["message_id"]), item.get("chat_id")
+        )
         if message is None:
             raise TGError("This file no longer exists in the channel.")
         file_info = getattr(message, "file", None)
@@ -881,9 +1377,17 @@ class TelegramService:
             size = int(getattr(document, "size", 0) or 0)
         return message, size, mime
 
-    async def edit_caption(self, message_id: int, name: str) -> None:
+    async def download_to(self, message: Any, path: Path, progress=None) -> None:
         client = self._require_ready()
-        message = await self.get_message(int(message_id))
+        await client.download_media(
+            message, file=str(path), progress_callback=progress
+        )
+
+    async def edit_caption(
+        self, message_id: int, name: str, chat_id: Optional[int] = None
+    ) -> None:
+        client = self._require_ready()
+        message = await self.get_message(int(message_id), chat_id)
         if message is None:
             return
         if getattr(message, "sticker", None) is not None or getattr(
@@ -897,12 +1401,18 @@ class TelegramService:
         except Exception as exc:
             raise TGError(friendly_error(exc))
 
-    async def delete_message(self, message_id: int) -> None:
+    async def delete_message(
+        self, message_id: int, chat_id: Optional[int] = None
+    ) -> None:
         client = self._require_ready()
+        active = self._active_chat_id()
+        if chat_id is not None and active is not None and int(chat_id) != active:
+            raise TGError("That file belongs to another vault. Switch back to it first.")
         try:
             await client.delete_messages(self._entity, [int(message_id)])
         except Exception as exc:
             raise TGError(friendly_error(exc))
+        self._message_cache.pop(int(message_id), None)
 
     # ----------------------------------------------------------------- upload
     def new_transfer(self, name: str, size: int, client: str = "") -> str:
@@ -919,6 +1429,7 @@ class TelegramService:
             "item_ids": [],
             "client": client,
             "cancel": cancelled,
+            "busy": True,
             "started": datetime.now().isoformat(timespec="seconds"),
         }
         self._prune_transfers()
@@ -952,7 +1463,8 @@ class TelegramService:
             return
         finished = [
             key for key, value in self.transfers.items()
-            if value["state"] in {"done", "error", "cancelled"}
+            if value["state"] in {"done", "error", "cancelled", "ready"}
+            and not value.get("busy")
         ]
         for key in finished[: len(self.transfers) - 60]:
             self.transfers.pop(key, None)
@@ -967,6 +1479,10 @@ class TelegramService:
 
     async def upload_one(self, entry: Dict[str, Any], catalog: Catalog) -> Dict[str, Any]:
         client = self._require_ready()
+        # Pin the target channel for the whole upload: a vault switch must
+        # never redirect a file (or its cleanup) into another channel.
+        target = self._entity
+        chat_id = int(target.id)
         transfer_id = entry["transfer_id"]
         name = clean_name(entry["name"])
         path = Path(entry["path"])
@@ -977,8 +1493,18 @@ class TelegramService:
         shared = bool(entry.get("shared"))
         sent_base = int(entry.get("sent_base") or 0)
         transfer["state"] = "uploading"
-        # Telegram's photo pipeline recompresses JPEG/PNG; keep originals intact.
-        keep_original = Path(name).suffix.lower() in {".png", ".jpg", ".jpeg"}
+        kind, mime = media_hint(path, name)
+        attributes = [DocumentAttributeFilename(name)]
+        if kind == "video":
+            attributes.append(
+                DocumentAttributeVideo(
+                    duration=0, w=1, h=1, supports_streaming=True
+                )
+            )
+        elif kind == "audio":
+            attributes.append(DocumentAttributeAudio(duration=0))
+        # Telegram's photo pipeline recompresses images; keep originals intact.
+        keep_original = kind == "image"
 
         def report(sent: int, total: int) -> None:
             # Telethon calls this between upload parts; raising aborts the upload.
@@ -992,30 +1518,33 @@ class TelegramService:
 
         try:
             message = await client.send_file(
-                self._entity,
+                target,
                 str(path),
                 caption=name,
                 force_document=keep_original,
-                attributes=[DocumentAttributeFilename(name)],
-                supports_streaming=True,
+                mime_type=mime,
+                attributes=attributes,
+                supports_streaming=kind == "video",
+                # Without this Telegram turns silent videos into animations.
+                nosound_video=True if kind == "video" else None,
                 progress_callback=report,
             )
             if transfer.get("cancel"):
                 # The upload finished before the cancel landed; remove the
                 # message so a cancelled file never shows up in the channel.
                 try:
-                    await client.delete_messages(self._entity, [message.id])
+                    await client.delete_messages(target, [message.id])
                 except Exception:
                     pass
                 raise TransferCancelled()
-            info = self.describe(message, int(self._entity.id))
+            info = self.describe(message, chat_id)
             if info is None:
                 raise TGError("Telegram stored the file but it could not be indexed.")
             item_id = catalog.upsert(info)
             if shared:
                 transfer.setdefault("item_ids", []).append(int(item_id))
             if folder:
-                catalog.create_folder(folder)
+                catalog.create_folder(folder, chat_id)
                 catalog.update(item_id, folder=folder, folder_source="user")
             item = catalog.get(item_id)
             if shared:

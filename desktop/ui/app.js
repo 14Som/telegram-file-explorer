@@ -33,6 +33,7 @@ const SVG = {
   move: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5"/><path d="m9.5 13.5 2.5 2.5 2.5-2.5"/>',
   tag: '<path d="M20 13 13 20l-9-9V4h7z"/><circle cx="8" cy="8" r="1.5"/>',
   link: '<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7L12.5 19"/>',
+  bot: '<rect x="4" y="7" width="16" height="13" rx="3"/><path d="M12 3v4"/><circle cx="9" cy="13" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="13" r="1.2" fill="currentColor" stroke="none"/><path d="M9 17h6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   check: '<path d="m4 12 5 5L20 6"/>',
   alert: '<path d="M12 9v5"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
@@ -40,6 +41,7 @@ const SVG = {
   sortAsc: '<path d="M12 19V5"/><path d="m6 11 6-6 6 6"/>',
   sortDesc: '<path d="M12 5v14"/><path d="m6 13 6 6 6-6"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>',
+  power: '<path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/>',
   eyeOff: '<path d="m3 3 18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.4 5.2A10.5 10.5 0 0 1 12 5c5 0 8.6 4.4 9.7 6.2a1.8 1.8 0 0 1 0 1.6 17 17 0 0 1-2.2 2.9"/><path d="M6.2 6.2A16.6 16.6 0 0 0 2.3 11.2a1.8 1.8 0 0 0 0 1.6C3.4 14.6 7 19 12 19a10.5 10.5 0 0 0 4.1-.8"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   filter: '<path d="M3 5h18l-7 8.2V20l-4-2v-4.8z"/>',
@@ -49,6 +51,8 @@ const SVG = {
   palette: '<circle cx="12" cy="12" r="9"/><circle cx="8" cy="10" r="1.2" fill="currentColor" stroke="none"/><circle cx="12" cy="8" r="1.2" fill="currentColor" stroke="none"/><circle cx="16" cy="10" r="1.2" fill="currentColor" stroke="none"/><path d="M12 21a3 3 0 0 1 0-6c1 0 1.5-.5 1.5-1.5"/>',
   uploadFolder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 16v-6"/><path d="m9 12 3-3 3 3"/>',
   chevron: '<path d="m9 18 6-6-6-6"/>',
+  chevronLeft: '<path d="m15 18-6-6 6-6"/>',
+  external: '<path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/>',
   foldCompact: '<path d="m7 20 5-5 5 5"/><path d="m7 4 5 5 5-5"/>',
   foldExpand: '<path d="m7 9 5-5 5 5"/><path d="m7 15 5 5 5-5"/>'
 };
@@ -258,6 +262,10 @@ const S = {
   channels: [],
   channelQuery: "",
   selectedChannel: null,
+  vaults: [],
+  vaultMenuOpen: false,
+  vaultBusy: false,
+  vaultRefreshBusy: false,
   nav: { folders: [], tags: [], kinds: [], stats: { count: 0, size: 0, favorites: 0, last_sync: null } },
   items: [],
   total: 0,
@@ -447,6 +455,12 @@ function init() {
   setIcon($("syncBtn"), "refresh");
   setIcon($("moreBtn"), "more");
   setIcon($("lockBtn"), "lock");
+  setIcon($("quitBtn"), "power");
+  setIcon($("vaultChipIcon"), "archive");
+  setIcon($("vaultChipCaret"), "chevron");
+  setIcon($("vaultRefreshBtn"), "refresh");
+  setIcon($("vaultNewIcon"), "plus");
+  setIcon($("vaultBotIcon"), "bot");
   $("lockLogo").innerHTML = LOGO;
   buildLockPad();
   setIcon($("backBtn"), "back");
@@ -457,6 +471,9 @@ function init() {
   $("uploadsClose").innerHTML = svgRaw("close");
   $("viewerClose").innerHTML = svgRaw("close");
   $("viewerDownload").innerHTML = svgRaw("download");
+  $("viewerPrev").innerHTML = svgRaw("chevronLeft");
+  $("viewerNext").innerHTML = svgRaw("chevron");
+  $("viewerMpv").innerHTML = svgRaw("external");
   document.querySelector('[data-view="details"]').innerHTML = svgRaw("list");
   document.querySelector('[data-view="tiles"]').innerHTML = svgRaw("grid");
   document.querySelector(".preview-empty-icon").innerHTML = svgRaw("file");
@@ -489,9 +506,38 @@ async function boot() {
   window.addEventListener("offline", updateChrome);
 }
 
+async function applyPendingVault() {
+  if (!pendingVault) return;
+  const target = pendingVault;
+  pendingVault = null;
+  const current = S.status && S.status.vault;
+  if (current && String(current.id) === target.id) return;
+  setStatus(`Opening ${target.title}…`);
+  try {
+    const data = await api("/api/vaults/switch", {
+      method: "POST",
+      body: { id: target.id }
+    });
+    S.status = {
+      ...(S.status || {}),
+      vault: data.vault || null,
+      vaults: data.vaults || []
+    };
+    S.vaults = data.vaults || [];
+    S.syncFinalHandled = null;
+    resetVaultView();
+    updateChrome();
+    toast(`Now using ${target.title}.`, "success", 4000);
+    waitForVaultSync();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
 async function enterUnlocked() {
   if (ready()) {
     hideLogin();
+    await applyPendingVault();
     await refreshLibrary(true);
     resetHistory();
     if (S.status.sync && S.status.sync.running) pollSync();
@@ -561,13 +607,18 @@ function updateChrome() {
     dot.classList.add("ok");
     text.textContent = st.sync && st.sync.running ? "Syncing…" : "Connected";
   }
+  if (st && Array.isArray(st.vaults)) S.vaults = st.vaults;
   if (st && st.vault) {
-    chip.hidden = false;
-    chip.textContent = st.vault.title || String(st.vault.id);
-    chip.title = `Storage channel: ${st.vault.title || st.vault.id}`;
+    $("vaultWrap").hidden = false;
+    $("vaultChipText").textContent = st.vault.title || String(st.vault.id);
+    chip.title = `Storage vault: ${st.vault.title || st.vault.id} — click to switch`;
+    chip.disabled = Boolean(S.vaultBusy) || !st.authorized;
+    if (S.vaultMenuOpen) renderVaultMenu();
   } else {
-    chip.hidden = true;
+    $("vaultWrap").hidden = true;
+    if (S.vaultMenuOpen) closeVaultMenu();
   }
+  if (S.vaultMenuOpen && (!st || st.locked || !st.authorized)) closeVaultMenu();
   updateBotChip(st);
   const lockBtn = $("lockBtn");
   lockBtn.hidden = !(st && st.pin_set);
@@ -637,13 +688,337 @@ async function toggleBot() {
   }
 }
 
+/* ---------------------------------------------------------------- vaults */
+function vaultBusyReason() {
+  const st = S.status || {};
+  if (st.sync && st.sync.running) {
+    return "Wait for the current sync to finish before switching vaults.";
+  }
+  if (S.localUpload) {
+    return "Wait for the current upload to finish before switching vaults.";
+  }
+  if (S.transfers.some((transfer) => transferActive(transfer.state) || transfer.busy)) {
+    return "Wait for the current uploads and downloads to finish before switching vaults.";
+  }
+  return "";
+}
+
+function toggleVaultMenu() {
+  if (S.vaultMenuOpen) {
+    closeVaultMenu();
+    return;
+  }
+  if (!S.status || !S.status.authorized) return;
+  S.vaultMenuOpen = true;
+  $("vaultMenu").hidden = false;
+  $("vaultChip").setAttribute("aria-expanded", "true");
+  renderVaultMenu();
+  if (!S.vaults.length) loadVaults(false);
+}
+
+function closeVaultMenu() {
+  S.vaultMenuOpen = false;
+  $("vaultMenu").hidden = true;
+  $("vaultChip").setAttribute("aria-expanded", "false");
+}
+
+function renderVaultMenu() {
+  if (!S.vaultMenuOpen) return;
+  const busy = vaultBusyReason();
+  const rows = [];
+  if (S.vaultRefreshBusy && !S.vaults.length) {
+    rows.push(h("div", { class: "vault-loading" },
+      h("span", { class: "spinner-small" }),
+      "Scanning Telegram…"
+    ));
+  }
+  for (const vault of S.vaults) {
+    const active = Boolean(vault.active);
+    const row = h("button", {
+      class: "vault-item" + (active ? " active" : ""),
+      type: "button",
+      role: "menuitem",
+      disabled: active || Boolean(busy) || S.vaultBusy,
+      title: active ? "This vault is open" : (busy || `Switch to ${vault.title || vault.id}`)
+    },
+      h("span", { class: "vault-item-mark", html: svgRaw(vault.username ? "link" : "lock") }),
+      h("span", { class: "vault-item-text" },
+        h("span", { class: "vault-item-title", text: vault.title || String(vault.id) }),
+        h("span", { class: "vault-item-sub", text: vault.username ? `@${vault.username}` : "Private channel" })
+      ),
+      active ? h("span", { class: "vault-item-check", html: svgRaw("check") }) : null
+    );
+    row.addEventListener("click", () => switchVault(vault));
+    rows.push(row);
+  }
+  if (!rows.length) {
+    rows.push(h("div", { class: "vault-empty", text: "No vaults found yet." }));
+  }
+  $("vaultList").replaceChildren(...rows);
+  const note = $("vaultMenuNote");
+  if (busy) {
+    note.hidden = false;
+    note.textContent = busy;
+  } else if (S.vaultRefreshBusy) {
+    note.hidden = false;
+    note.textContent = "Scanning Telegram for storage vaults…";
+  } else {
+    note.hidden = true;
+  }
+  $("vaultNewBtn").disabled = Boolean(busy) || S.vaultBusy || !(S.status && S.status.authorized);
+  $("vaultBotBtn").disabled = Boolean(busy) || S.vaultBusy || !(S.status && S.status.authorized);
+  $("vaultRefreshBtn").disabled = S.vaultRefreshBusy || S.vaultBusy;
+}
+
+async function loadVaults(refresh) {
+  if (!S.status || !S.status.authorized || S.vaultRefreshBusy || S.vaultBusy) return;
+  S.vaultRefreshBusy = true;
+  $("vaultRefreshBtn").classList.add("spinning");
+  renderVaultMenu();
+  try {
+    const data = await api(`/api/vaults${refresh ? "?refresh=1" : ""}`);
+    S.vaults = data.vaults || [];
+    if (data.vault) {
+      S.status = { ...S.status, vault: data.vault, vaults: S.vaults };
+    }
+    updateChrome();
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    S.vaultRefreshBusy = false;
+    $("vaultRefreshBtn").classList.remove("spinning");
+    renderVaultMenu();
+  }
+}
+
+function resetVaultView() {
+  closeViewer();
+  S.selection.clear();
+  S.selectionAnchor = null;
+  S.selectedId = null;
+  S.selectedFolderPath = null;
+  S.navMode = "all";
+  S.folder = "";
+  S.tag = "";
+  S.kind = "";
+  S.q = "";
+  S.favorite = false;
+  S.hiddenOnly = false;
+  S.filters = newFilterState();
+  S.items = [];
+  S.total = 0;
+  S.totalSize = 0;
+  $("searchInput").value = "";
+  $("kindSelect").value = "";
+  resetHistory();
+  updateFilterBadge();
+  renderSidebar();
+  renderSelection();
+  renderPreview();
+  renderItems();
+}
+
+async function afterVaultChanged(data, label, created) {
+  S.status = {
+    ...(S.status || {}),
+    vault: data.vault || null,
+    vaults: data.vaults || []
+  };
+  S.vaults = data.vaults || [];
+  S.syncFinalHandled = null;
+  resetVaultView();
+  updateChrome();
+  setStatus(created ? `Vault “${label}” created` : `Switched to ${label}`);
+  await refreshLibrary(true);
+  waitForVaultSync();
+}
+
+async function waitForVaultSync() {
+  if (S.syncTimer) return;
+  // The server starts the sync right after the switch; wait until the task is
+  // visibly running so the normal progress poll does not report a false finish.
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      const data = await api("/api/sync");
+      if (data.sync && data.sync.running) {
+        pollSync();
+        return;
+      }
+    } catch (_) {
+      /* one more try */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
+async function switchVault(vault) {
+  if (!vault || vault.active || S.vaultBusy) return;
+  const busy = vaultBusyReason();
+  if (busy) {
+    toast(busy, "info");
+    return;
+  }
+  closeVaultMenu();
+  S.vaultBusy = true;
+  updateChrome();
+  setStatus(`Switching to ${vault.title || vault.id}…`);
+  try {
+    const data = await api("/api/vaults/switch", {
+      method: "POST",
+      body: { id: vault.id }
+    });
+    await afterVaultChanged(data, vault.title || vault.id, false);
+    toast(`Now using ${vault.title || vault.id}.`, "success", 4000);
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    S.vaultBusy = false;
+    updateChrome();
+  }
+}
+
+async function addStorageBot() {
+  if (S.vaultBusy || !S.status || !S.status.authorized) return;
+  const vault = S.status.vault || {};
+  closeVaultMenu();
+  S.vaultBusy = true;
+  updateChrome();
+  setStatus("Adding the storage bot…");
+  try {
+    const data = await api("/api/vaults/bot", {
+      method: "POST",
+      body: { id: vault.id ? String(vault.id) : "" }
+    });
+    if (data.added) {
+      toast(`Storage bot @${data.username} is now an admin of this vault.`, "success", 5000);
+    } else {
+      toast(
+        data.message || "The storage bot could not be added.",
+        data.reason === "no_bot" ? "info" : "error",
+        7000
+      );
+    }
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    S.vaultBusy = false;
+    updateChrome();
+  }
+}
+
+function promptNewVault() {
+  closeVaultMenu();
+  const busy = vaultBusyReason();
+  if (busy) {
+    toast(busy, "info");
+    return;
+  }
+  const input = inputEl({
+    type: "text",
+    placeholder: "e.g. Work files",
+    maxlength: "128",
+    autocomplete: "off"
+  });
+  openModal({
+    title: "New storage vault",
+    subtitle: "A private Telegram channel, created for you.",
+    content: field(
+      "Vault name",
+      input,
+      "The channel is created in Telegram automatically, the storage bot is added "
+        + "as an admin, and it becomes the active vault. New uploads go there; your "
+        + "other vaults stay untouched."
+    ),
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Create vault",
+        class: "primary",
+        onClick: async () => {
+          const name = input.value.trim();
+          if (!name) {
+            input.focus();
+            return;
+          }
+          S.vaultBusy = true;
+          updateChrome();
+          try {
+            const data = await api("/api/vaults/create", {
+              method: "POST",
+              body: { name }
+            });
+            closeModal();
+            const title = (data.vault && data.vault.title) || name;
+            const bot = data.bot || {};
+            await afterVaultChanged(data, title, true);
+            if (bot.added) {
+              toast(`Vault “${title}” created — storage bot added as admin.`, "success", 5500);
+            } else if (bot.reason === "error") {
+              toast(
+                `Vault “${title}” created, but the storage bot could not be added: ${bot.message}`,
+                "error",
+                8000
+              );
+            } else {
+              toast(
+                `Vault “${title}” created. No storage bot was found to add — use “Add storage bot” once in a vault where it is an admin.`,
+                "info",
+                9000
+              );
+            }
+          } catch (error) {
+            toast(error.message, "error");
+            input.focus();
+          } finally {
+            S.vaultBusy = false;
+            updateChrome();
+          }
+        }
+      }
+    ]
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const create = $("modalActions").querySelector(".primary");
+    if (create && !create.disabled) create.click();
+  });
+  input.focus();
+}
+
 /* ----------------------------------------------------------------- app lock */
 let pinBuffer = "";
+let recoveryTimer = null;
+let pendingVault = null;
 
-function showLock() {
+function restoreLockView() {
+  clearInterval(recoveryTimer);
+  recoveryTimer = null;
   pinBuffer = "";
   renderLockDots();
+  $("lockTitle").textContent = "Enter your PIN";
+  $("lockSub").textContent = "Telegram File Explorer is locked";
+  $("lockDots").hidden = false;
+  $("lockPad").hidden = false;
+  $("lockForgot").hidden = false;
   $("lockError").hidden = true;
+  $("lockRecover").hidden = true;
+  $("lockVaults").hidden = true;
+  $("lockVaultBtn").hidden = false;
+  $("recoverError").hidden = true;
+  $("recoverStatus").hidden = true;
+  $("recoverForm").hidden = true;
+  $("recoverCode").value = "";
+  $("recoverPin").value = "";
+  $("recoverPin2").value = "";
+  const send = $("recoverSend");
+  send.disabled = false;
+  send.textContent = "Send code to Telegram";
+  renderLockVault();
+}
+
+function showLock() {
+  restoreLockView();
   $("lockOverlay").hidden = false;
   hideLogin();
   closeModal();
@@ -651,6 +1026,236 @@ function showLock() {
 
 function hideLock() {
   $("lockOverlay").hidden = true;
+  clearInterval(recoveryTimer);
+  recoveryTimer = null;
+}
+
+function backToPin() {
+  pinBuffer = "";
+  renderLockDots();
+  $("lockTitle").textContent = "Enter your PIN";
+  $("lockSub").textContent = "Telegram File Explorer is locked";
+  $("lockDots").hidden = false;
+  $("lockPad").hidden = false;
+  $("lockForgot").hidden = false;
+  $("lockVaultBtn").hidden = false;
+  $("lockError").hidden = true;
+  $("lockRecover").hidden = true;
+  $("lockVaults").hidden = true;
+  renderLockVault();
+}
+
+function lockVaultEntries() {
+  const st = S.status || {};
+  const entries = (st.vaults || []).map((vault) => ({
+    id: String(vault.id),
+    title: vault.title || String(vault.id)
+  }));
+  const current = st.vault;
+  if (current && !entries.some((entry) => entry.id === String(current.id))) {
+    entries.unshift({ id: String(current.id), title: current.title || String(current.id) });
+  }
+  return entries;
+}
+
+function renderLockVault() {
+  const st = S.status || {};
+  const current = st.vault
+    ? { id: String(st.vault.id), title: st.vault.title || String(st.vault.id) }
+    : null;
+  const chosen = pendingVault || current;
+  $("lockVaultName").textContent = chosen ? chosen.title : "Choose storage";
+  const note = $("lockVaultNote");
+  if (!chosen) {
+    note.textContent = "No storage vault found yet. Enter your PIN first to scan Telegram.";
+    note.hidden = false;
+  } else if (pendingVault && (!current || current.id !== pendingVault.id)) {
+    note.textContent = "This vault opens as soon as you enter your PIN.";
+    note.hidden = false;
+  } else {
+    note.hidden = true;
+  }
+}
+
+function renderLockVaultList() {
+  const st = S.status || {};
+  const currentId = st.vault ? String(st.vault.id) : "";
+  const chosenId = pendingVault ? pendingVault.id : currentId;
+  const entries = lockVaultEntries();
+  const list = $("lockVaultList");
+  list.replaceChildren();
+  if (!entries.length) {
+    list.append(h("p", { class: "lock-sub", text: "No storage vaults found." }));
+    return;
+  }
+  for (const entry of entries) {
+    const chosen = entry.id === chosenId;
+    const row = h("button", {
+      class: "lock-vault-row" + (chosen ? " chosen" : ""),
+      type: "button",
+      title: chosen ? "This vault will open" : `Open ${entry.title} after the PIN`
+    },
+      h("span", { class: "lock-vault-row-mark", html: svgRaw("archive") }),
+      h("span", { class: "lock-vault-row-name", text: entry.title }),
+      h("span", { class: "lock-vault-row-check", html: chosen ? svgRaw("check") : "" })
+    );
+    row.addEventListener("click", () => chooseLockVault(entry));
+    list.append(row);
+  }
+}
+
+function chooseLockVault(entry) {
+  const current = S.status && S.status.vault;
+  pendingVault = current && String(current.id) === entry.id ? null : entry;
+  backToPin();
+}
+
+async function showLockVaults() {
+  pinBuffer = "";
+  renderLockDots();
+  $("lockDots").hidden = true;
+  $("lockPad").hidden = true;
+  $("lockForgot").hidden = true;
+  $("lockVaultBtn").hidden = true;
+  $("lockVaultNote").hidden = true;
+  $("lockError").hidden = true;
+  $("lockRecover").hidden = true;
+  $("lockTitle").textContent = "Choose storage";
+  $("lockSub").textContent = "The vault you pick opens after your PIN";
+  $("lockVaults").hidden = false;
+  renderLockVaultList();
+  try {
+    S.status = await api("/api/status");
+    updateChrome();
+    renderLockVaultList();
+  } catch (_) {
+    /* keep the list from the last known status */
+  }
+}
+
+function showRecovery() {
+  pinBuffer = "";
+  renderLockDots();
+  $("lockDots").hidden = true;
+  $("lockPad").hidden = true;
+  $("lockForgot").hidden = true;
+  $("lockVaultBtn").hidden = true;
+  $("lockVaultNote").hidden = true;
+  $("lockVaults").hidden = true;
+  $("lockError").hidden = true;
+  $("lockTitle").textContent = "Forgot your PIN?";
+  $("lockSub").textContent = "Reset it with a code from Telegram";
+  $("lockRecover").hidden = false;
+  const st = S.status || {};
+  if (st.pin_recovery === false) {
+    $("recoverSend").disabled = true;
+    showRecoverError("Telegram is not signed in on this PC, so a code cannot be sent.");
+  } else if ($("recoverForm").hidden) {
+    $("recoverSend").disabled = false;
+    $("recoverError").hidden = true;
+  } else {
+    $("recoverCode").focus();
+  }
+}
+
+function showRecoverError(message) {
+  const box = $("recoverError");
+  box.textContent = message;
+  box.hidden = false;
+}
+
+function digitsOnly(input, max) {
+  const cleaned = input.value.replace(/\D/g, "").slice(0, max);
+  if (cleaned !== input.value) input.value = cleaned;
+}
+
+async function sendRecoveryCode() {
+  const send = $("recoverSend");
+  if (send.disabled) return;
+  $("recoverError").hidden = true;
+  $("recoverStatus").hidden = true;
+  send.disabled = true;
+  send.textContent = "Sending…";
+  try {
+    const result = await api("/api/pin/recover", { method: "POST" });
+    $("recoverForm").hidden = false;
+    $("recoverCode").value = "";
+    $("recoverPin").value = "";
+    $("recoverPin2").value = "";
+    const status = $("recoverStatus");
+    status.textContent = "Code sent to Saved Messages in Telegram. Check your phone, then set a new PIN below.";
+    status.hidden = false;
+    $("recoverCode").focus();
+    startRecoveryCooldown(result.retry_after || 60);
+  } catch (error) {
+    send.disabled = false;
+    send.textContent = "Send code to Telegram";
+    showRecoverError(error.message || "Could not send the code.");
+  }
+}
+
+function startRecoveryCooldown(seconds) {
+  const send = $("recoverSend");
+  let left = Math.max(1, Number(seconds) || 60);
+  clearInterval(recoveryTimer);
+  const tick = () => {
+    if (left <= 0) {
+      clearInterval(recoveryTimer);
+      recoveryTimer = null;
+      send.disabled = false;
+      send.textContent = "Send another code";
+      return;
+    }
+    send.disabled = true;
+    send.textContent = `Send again in ${left}s`;
+    left -= 1;
+  };
+  tick();
+  recoveryTimer = setInterval(tick, 1000);
+}
+
+async function applyRecovery() {
+  const code = $("recoverCode").value.trim();
+  const pin = $("recoverPin").value;
+  const again = $("recoverPin2").value;
+  if (!/^\d{6}$/.test(code)) {
+    showRecoverError("Enter the 6-digit code from Telegram.");
+    $("recoverCode").focus();
+    return;
+  }
+  if (!/^\d{4}$/.test(pin)) {
+    showRecoverError("The new PIN must be exactly 4 digits.");
+    $("recoverPin").focus();
+    return;
+  }
+  if (pin !== again) {
+    showRecoverError("The new PINs do not match.");
+    $("recoverPin2").focus();
+    return;
+  }
+  const button = $("recoverApply");
+  button.disabled = true;
+  button.textContent = "Saving…";
+  try {
+    await api("/api/pin/reset", { method: "POST", body: { code, pin } });
+    if (S.status) {
+      S.status.pin_set = true;
+      S.status.locked = false;
+      S.status.pin_recovery = true;
+    }
+    restoreLockView();
+    hideLock();
+    updateChrome();
+    toast("PIN reset. The app is unlocked.", "success", 5000);
+    await enterUnlocked();
+  } catch (error) {
+    showRecoverError(error.message || "Could not reset the PIN.");
+    $("recoverCode").value = "";
+    $("recoverCode").focus();
+  } finally {
+    button.disabled = false;
+    button.textContent = "Set new PIN";
+  }
 }
 
 function renderLockDots() {
@@ -754,7 +1359,7 @@ function promptPinSetup() {
       h("p", { text: "Lock this app with a 4-digit PIN. You will enter it every time the app opens." }),
       field("PIN", pin),
       field("Repeat PIN", again),
-      h("p", { class: "modal-note", text: "Only a hash of the PIN is stored. If you forget it, remove the pin_hash and pin_salt lines from %APPDATA%\\TelegramFileExplorer\\settings.json." })
+      h("p", { class: "modal-note", text: "Only a hash of the PIN is stored. If you forget it, choose Forgot PIN? on the lock screen to reset it with a code sent to Saved Messages in Telegram." })
     ),
     actions: [
       {
@@ -1902,18 +2507,37 @@ function buildFolderRow(folder) {
     h("div", { class: "cell cell-folder", title: folder.parent || "", text: folder.parent || "—" })
   );
 }
+function buildCoverGrid(folder) {
+  const covers = (folder.covers || []).slice(0, 4);
+  if (!covers.length) return null;
+  const grid = h("div", { class: `cover-grid n${covers.length}` });
+  for (const cover of covers) {
+    const image = h("img", { src: cover.url, alt: "", loading: "lazy", decoding: "async" });
+    image.addEventListener("error", () => image.classList.add("broken"));
+    grid.append(image);
+  }
+  return grid;
+}
+function folderIconBadge(folder) {
+  return folder.icon ? h("span", { class: "cover-icon", text: folder.icon }) : null;
+}
 function buildFolderThumb(folder) {
+  const grid = buildCoverGrid(folder);
+  if (grid) return h("span", { class: "thumb folder-thumb covers" }, grid, folderIconBadge(folder));
   const glyph = folder.icon
     ? h("span", { class: "folder-glyph", text: folder.icon })
     : h("span", { class: "folder-glyph", html: svgRaw("folder") });
   return h("span", { class: "thumb folder-thumb" }, glyph);
 }
 function buildFolderTile(folder) {
-  const media = h("div", { class: "tile-media folder-tile-media" },
-    folder.icon
-      ? h("span", { class: "folder-glyph large", text: folder.icon })
-      : h("span", { class: "folder-glyph large", html: svgRaw("folder") })
-  );
+  const grid = buildCoverGrid(folder);
+  const media = grid
+    ? h("div", { class: "tile-media folder-tile-media covers" }, grid, folderIconBadge(folder))
+    : h("div", { class: "tile-media folder-tile-media" },
+        folder.icon
+          ? h("span", { class: "folder-glyph large", text: folder.icon })
+          : h("span", { class: "folder-glyph large", html: svgRaw("folder") })
+      );
   if (folder.n) media.append(h("span", { class: "tile-badge", text: plural(folder.n, "file") }));
   if (folder.note) media.append(h("span", { class: "tile-badge note", title: folder.note, html: svgRaw("note") }));
   return h("div", { class: "tile folder-tile" + (folderSelected(folder) ? " selected" : ""), "data-folder": folder.folder, tabindex: "-1" },
@@ -2280,6 +2904,7 @@ function renderPreview() {
     tags.append(chip);
   }
   $("favoriteBtn").textContent = item.favorite ? "Unfavorite" : "Favorite";
+  $("thumbBtn").hidden = item.kind !== "video";
   $("restoreBtn").hidden = !item.hidden;
   $("completeBtn").hidden = !(item.part_of && item.part_of.count > 1);
   const link = $("tgLink");
@@ -2325,12 +2950,15 @@ function renderFolderPreview(folder) {
   }
   setPreviewNote(folder.note, true);
   const media = $("previewMedia");
+  const grid = buildCoverGrid(folder);
   media.replaceChildren(
-    h("div", { class: "folder-preview-large" },
-      folder.icon
-        ? h("span", { class: "folder-preview-emoji", text: folder.icon })
-        : h("span", { class: "folder-preview-svg", html: svgRaw("folderOpen") })
-    )
+    grid
+      ? h("div", { class: "folder-preview-covers" }, grid, folderIconBadge(folder))
+      : h("div", { class: "folder-preview-large" },
+          folder.icon
+            ? h("span", { class: "folder-preview-emoji", text: folder.icon })
+            : h("span", { class: "folder-preview-svg", html: svgRaw("folderOpen") })
+        )
   );
 }
 function isPdf(item) {
@@ -2375,27 +3003,81 @@ function renderInlinePreview(container, item, token) {
     container.append(h("div", { class: "preview-file" }, fileIcon(kind), h("span", { text: "Preview isn’t available for this file type." }), h("span", { text: "Use Download or open it in Telegram." })));
   }
 }
+const VIEWER = {
+  item: null,
+  player: null,
+  gallery: null,
+  list: [],
+  index: -1,
+  token: 0,
+  lastSave: 0,
+  spriteTimer: null,
+  spriteTries: 0,
+  sprites: null,
+  slideshow: null,
+  slideshowDriven: false
+};
+const SLIDESHOW_MS = 4000;
+function isVideoLike(item) {
+  return Boolean(item) && (item.kind === "video" || item.kind === "gif" || (item.kind === "sticker" && isVideoMime(item)));
+}
+function viewerFamily(item) {
+  const kind = item.kind || "";
+  if (kind === "video") return (entry) => entry.kind === "video";
+  if (kind === "audio" || kind === "voice") return (entry) => entry.kind === "audio" || entry.kind === "voice";
+  if (kind === "image" || (kind === "sticker" && !isVideoMime(item))) {
+    return (entry) => entry.kind === "image" || (entry.kind === "sticker" && !isVideoMime(entry));
+  }
+  return null;
+}
+function buildViewerList(item) {
+  const family = viewerFamily(item);
+  const list = family ? S.items.filter(family) : [];
+  if (!list.some((entry) => entry.id === item.id)) list.push(item);
+  return list;
+}
+function updateViewerBar() {
+  const item = VIEWER.item;
+  const list = VIEWER.list;
+  $("viewerTitle").textContent = item ? item.name : "";
+  $("viewerCounter").textContent = list.length > 1 ? `${VIEWER.index + 1} / ${list.length}` : "";
+  $("viewerPrev").disabled = list.length < 2;
+  $("viewerNext").disabled = list.length < 2;
+  if (item) {
+    $("viewerDownload").href = item.download_url;
+    $("viewerDownload").setAttribute("download", "");
+  }
+  $("viewerMpv").hidden = !(item && (isVideoLike(item) || item.kind === "audio" || item.kind === "voice"));
+}
 function openViewerFor(item) {
   if (!item) return;
-  $("viewerTitle").textContent = item.name;
+  VIEWER.list = buildViewerList(item);
+  VIEWER.index = Math.max(0, VIEWER.list.findIndex((entry) => entry.id === item.id));
+  // The overlay must be visible before the player is built, or Video.js
+  // measures a zero-height stage and stays invisible.
+  $("viewerOverlay").hidden = false;
+  showViewerItem(VIEWER.list[VIEWER.index]);
+  $("viewerClose").focus();
+}
+function showViewerItem(item) {
+  if (!item) return;
+  saveViewerPosition(true);
+  destroyViewerMedia();
+  VIEWER.item = item;
+  VIEWER.token += 1;
+  VIEWER.spriteTries = 0;
+  const token = VIEWER.token;
   const stage = $("viewerStage");
+  stage.className = "viewer-stage";
   stage.replaceChildren();
-  $("viewerDownload").href = item.download_url;
-  $("viewerDownload").setAttribute("download", "");
-  if (item.kind === "image" || item.kind === "sticker") {
-    if (item.kind === "sticker" && isVideoMime(item)) {
-      stage.append(h("video", { src: item.stream_url, autoplay: "", loop: "", controls: "", playsinline: "" }));
-    } else {
-      stage.append(h("img", { src: item.stream_url, alt: item.name }));
-    }
-  } else if (item.kind === "gif") {
-    stage.append(h("video", { src: item.stream_url, autoplay: "", loop: "", muted: "", controls: "", playsinline: "" }));
-  } else if (item.kind === "video") {
-    const video = h("video", { src: item.stream_url, controls: "", autoplay: "", playsinline: "" });
-    if (item.thumb_url) video.poster = item.thumb_url;
-    stage.append(video);
-  } else if (item.kind === "audio" || item.kind === "voice") {
-    stage.append(h("audio", { src: item.stream_url, controls: "", autoplay: "" }));
+  VIEWER.index = Math.max(0, VIEWER.list.findIndex((entry) => entry.id === item.id));
+  updateViewerBar();
+  if (isVideoLike(item)) initVideoViewer(item, token);
+  else if (item.kind === "image" || item.kind === "sticker") initImageViewer(item, token);
+  else if (item.kind === "audio" || item.kind === "voice") {
+    stage.append(h("div", { class: "viewer-audio" },
+      h("audio", { src: item.stream_url, controls: "", autoplay: "", preload: "metadata" })
+    ));
   } else if (isPdf(item)) {
     stage.append(h("iframe", { src: item.stream_url, title: item.name }));
   } else if (isText(item)) {
@@ -2403,17 +3085,326 @@ function openViewerFor(item) {
     stage.append(pre);
     fetch(item.stream_url, { headers: { Range: "bytes=0-262143" }, credentials: "same-origin" })
       .then((response) => response.text())
-      .then((text) => { pre.textContent = text.length > 150000 ? `${text.slice(0, 150000)}\n\n… preview truncated` : text; })
-      .catch(() => { pre.textContent = "Preview not available."; });
+      .then((text) => { if (token === VIEWER.token) pre.textContent = text.length > 150000 ? `${text.slice(0, 150000)}\n\n… preview truncated` : text; })
+      .catch(() => { if (token === VIEWER.token) pre.textContent = "Preview not available."; });
   } else {
     stage.append(h("div", { class: "viewer-file" }, fileIcon(item.kind), h("div", { text: item.name }), h("div", { class: "preview-kind", text: "Preview isn’t available for this file type. Use the download button above." })));
   }
-  $("viewerOverlay").hidden = false;
-  $("viewerClose").focus();
+}
+function initVideoViewer(item, token) {
+  const stage = $("viewerStage");
+  const isGif = item.kind === "gif";
+  stage.classList.add("video");
+  const element = h("video-js", {
+    id: "tfePlayer",
+    class: "video-js vjs-tfe",
+    controls: "",
+    autoplay: "",
+    playsinline: "",
+    preload: "metadata"
+  });
+  element.append(h("source", { src: item.stream_url, type: item.mime || "video/mp4" }));
+  stage.append(element);
+  const player = videojs(element, {
+    autoplay: true,
+    controls: true,
+    fill: true,
+    fluid: false,
+    preload: "metadata",
+    playbackRates: [0.5, 0.75, 1, 1.25, 1.5, 2],
+    poster: item.thumb_url || "",
+    controlBar: { pictureInPictureToggle: true }
+  });
+  VIEWER.player = player;
+  // The sprite thumbnails plugin only reads its state on the media's own
+  // loadstart/loadedmetadata, so it has to exist before those fire — long
+  // before the preview sheet is ready. The URL is swapped in later.
+  VIEWER.sprites = null;
+  if (!isGif) {
+    try {
+      VIEWER.sprites = player.spriteThumbnails({
+        url: `/api/storyboard/${item.id}/sprite.jpg?v=${Number(item.thumb_version) || 0}`,
+        width: 160,
+        height: 90,
+        columns: 5,
+        rows: 6,
+        interval: 3,
+        downlink: 0,
+        responsive: false
+      });
+    } catch (_) {
+      /* previews are optional */
+    }
+  }
+  if (isGif) {
+    player.loop(true);
+    player.muted(true);
+  }
+  player.one("loadedmetadata", () => {
+    if (token !== VIEWER.token) return;
+    const start = Number(item.play_pos || 0);
+    const duration = Number(player.duration() || 0);
+    if (!isGif && start > 3 && (!duration || start < duration - 3)) {
+      player.currentTime(start);
+      toast(`Resumed at ${fmtDuration(start)}`, "info", 2200);
+    }
+    if (!isGif) loadStoryboard(item, token);
+  });
+  player.on("timeupdate", () => {
+    if (token !== VIEWER.token || isGif || player.paused()) return;
+    const now = Date.now();
+    if (now - VIEWER.lastSave < 5000) return;
+    VIEWER.lastSave = now;
+    queueViewerPosition(item, player.currentTime(), player.duration());
+  });
+  player.on("pause", () => { if (token === VIEWER.token && !isGif) saveViewerPosition(true); });
+  player.on("ended", () => {
+    if (token !== VIEWER.token || isGif) return;
+    item.play_pos = 0;
+    queueViewerPosition(item, 0, player.duration());
+  });
+  player.on("error", () => {
+    if (token === VIEWER.token) showViewerFallback(item);
+  });
+  player.ready(() => {
+    if (token !== VIEWER.token) return;
+    try { const playing = player.play(); if (playing && playing.catch) playing.catch(() => {}); } catch (_) {}
+    try { player.focus({ preventScroll: true }); } catch (_) {}
+  });
+}
+function initImageViewer(item, token) {
+  const stage = $("viewerStage");
+  stage.classList.add("image");
+  const images = VIEWER.list.filter((entry) => entry.kind === "image" || entry.kind === "sticker");
+  if (!images.some((entry) => entry.id === item.id)) images.push(item);
+  const gallery = h("div", { class: "viewer-gallery" });
+  for (const entry of images) {
+    gallery.append(h("img", {
+      src: entry.thumb_url || entry.stream_url,
+      "data-original": entry.stream_url,
+      alt: entry.name,
+      "data-id": String(entry.id)
+    }));
+  }
+  stage.append(gallery);
+  const start = Math.max(0, images.findIndex((entry) => entry.id === item.id));
+  const toolbar = {
+    zoomIn: 1, zoomOut: 1, oneToOne: 1, reset: 1,
+    rotateLeft: 1, rotateRight: 1, flipHorizontal: 1, flipVertical: 1
+  };
+  if (images.length > 1) {
+    Object.assign(toolbar, {
+      prev: 1,
+      play: {
+        // Viewer.js's own play() loads every image up front, which is far too
+        // much for Telegram streams, so the button drives the app-level timer.
+        click(event) { toggleViewerSlideshow(event.currentTarget); }
+      },
+      next: 1
+    });
+  }
+  const galleryViewer = new Viewer(gallery, {
+    inline: true,
+    zIndexInline: 45,
+    navbar: images.length > 1 ? { show: true, position: "bottom" } : false,
+    title: false,
+    button: false,
+    toolbar,
+    keyboard: false,
+    focus: false,
+    transition: false,
+    backdrop: false,
+    loading: true,
+    loop: true,
+    initialViewIndex: start,
+    url(image) { return image.getAttribute("data-original") || image.src; }
+  });
+  VIEWER.gallery = galleryViewer;
+  gallery.addEventListener("view", (event) => {
+    if (token !== VIEWER.token) return;
+    if (!VIEWER.slideshowDriven) stopViewerSlideshow();
+    const index = event.detail ? Number(event.detail.index) : 0;
+    const entry = images[index];
+    if (!entry) return;
+    VIEWER.item = entry;
+    VIEWER.index = Math.max(0, VIEWER.list.findIndex((candidate) => candidate.id === entry.id));
+    updateViewerBar();
+  });
+}
+function showViewerFallback(item) {
+  const stage = $("viewerStage");
+  destroyViewerMedia();
+  stage.className = "viewer-stage";
+  stage.replaceChildren(h("div", { class: "viewer-fallback" },
+    fileIcon(item.kind),
+    h("h3", { text: "This format can’t play here" }),
+    h("p", { text: "MKV, HEVC and some other formats need a different decoder. mpv plays this same Telegram stream in its own window." }),
+    h("button", { class: "btn primary", type: "button", text: "Open in mpv", onclick: () => openInMpv(item) })
+  ));
+}
+function queueViewerPosition(item, position, duration) {
+  if (!item) return;
+  const body = { position: Number(position) || 0, duration: Number(duration) || 0 };
+  item.play_pos = body.position;
+  fetch(`/api/items/${item.id}/position`, {
+    method: "POST",
+    credentials: "same-origin",
+    keepalive: true,
+    headers: { "Content-Type": "application/json", "X-TFE": "1" },
+    body: JSON.stringify(body)
+  }).catch(() => {});
+}
+function saveViewerPosition(force) {
+  const player = VIEWER.player;
+  const item = VIEWER.item;
+  if (!player || !item) return;
+  if (!force && player.paused()) return;
+  const position = Number(player.currentTime() || 0);
+  if (position < 2) return;
+  queueViewerPosition(item, position, player.duration());
+}
+function playButton() {
+  return document.querySelector("#viewerStage .viewer-toolbar > ul > .viewer-play");
+}
+function stopViewerSlideshow() {
+  if (VIEWER.slideshow) { clearInterval(VIEWER.slideshow); VIEWER.slideshow = null; }
+  const button = playButton();
+  if (button) button.classList.remove("viewer-playing");
+}
+function toggleViewerSlideshow(button) {
+  if (VIEWER.slideshow) { stopViewerSlideshow(); return; }
+  const viewer = VIEWER.gallery;
+  if (!viewer || !viewer.images || viewer.images.length < 2) return;
+  if (button) button.classList.add("viewer-playing");
+  VIEWER.slideshow = setInterval(() => {
+    const current = VIEWER.gallery;
+    if (!current) { stopViewerSlideshow(); return; }
+    VIEWER.slideshowDriven = true;
+    current.view((current.index + 1) % current.images.length);
+    VIEWER.slideshowDriven = false;
+  }, SLIDESHOW_MS);
+}
+function destroyViewerMedia() {
+  stopViewerSlideshow();
+  if (VIEWER.spriteTimer) { clearTimeout(VIEWER.spriteTimer); VIEWER.spriteTimer = null; }
+  VIEWER.sprites = null;
+  if (VIEWER.gallery) { try { VIEWER.gallery.destroy(); } catch (_) {} VIEWER.gallery = null; }
+  if (VIEWER.player) { try { VIEWER.player.dispose(); } catch (_) {} VIEWER.player = null; }
+  $("viewerPreviews").hidden = true;
 }
 function closeViewer() {
-  $("viewerOverlay").hidden = true;
+  saveViewerPosition(true);
+  if (document.fullscreenElement && document.exitFullscreen) {
+    document.exitFullscreen().catch(() => {});
+  }
+  destroyViewerMedia();
+  VIEWER.item = null;
+  $("viewerStage").className = "viewer-stage";
   $("viewerStage").replaceChildren();
+  $("viewerOverlay").hidden = true;
+}
+function stepViewer(step) {
+  if (VIEWER.gallery) {
+    if (step > 0) VIEWER.gallery.next();
+    else VIEWER.gallery.prev();
+    return;
+  }
+  const next = VIEWER.index + step;
+  if (next < 0 || next >= VIEWER.list.length) return;
+  showViewerItem(VIEWER.list[next]);
+}
+async function loadStoryboard(item, token) {
+  if (token !== VIEWER.token) return;
+  let data = null;
+  try { data = await api(`/api/storyboard/${item.id}`); } catch (_) { return; }
+  if (!data || token !== VIEWER.token) return;
+  if (data.state === "ready") { attachSprite(data); return; }
+  if (data.state === "missing-tool") { $("viewerPreviews").hidden = false; return; }
+  if (data.state === "pending" && VIEWER.spriteTries < 40) {
+    VIEWER.spriteTries += 1;
+    VIEWER.spriteTimer = setTimeout(() => loadStoryboard(item, token), 3000);
+  }
+}
+function attachSprite(data) {
+  const sprites = VIEWER.sprites;
+  if (!sprites || !sprites.options) return;
+  sprites.options.url = data.url;
+  sprites.options.interval = Number(data.interval) || 3;
+  sprites.options.columns = Number(data.columns) || 5;
+  sprites.options.rows = Number(data.rows) || 6;
+  sprites.options.width = Number(data.width) || 160;
+  sprites.options.height = Number(data.height) || 90;
+}
+function viewerTime(item) {
+  if (VIEWER.player && VIEWER.item && VIEWER.item.id === item.id) {
+    return Number(VIEWER.player.currentTime() || 0);
+  }
+  return Number(item.play_pos || 0);
+}
+async function openInMpv(item) {
+  if (!item) return;
+  let tools = null;
+  try { tools = await api("/api/tools"); } catch (_) {}
+  const mpv = tools && tools.mpv;
+  if (!mpv || !mpv.installed) {
+    promptInstallTool("mpv", () => openInMpv(item));
+    return;
+  }
+  try {
+    await api(`/api/items/${item.id}/mpv`, { method: "POST", body: { position: viewerTime(item) } });
+    toast("Opening in mpv…", "info", 2500);
+  } catch (error) {
+    toast(error.message, "error", 6000);
+  }
+}
+function promptInstallTool(tool, after) {
+  const label = tool === "mpv" ? "mpv player" : tool === "ffmpeg" ? "ffmpeg previews" : tool;
+  const size = tool === "mpv" ? 32 * 1024 * 1024 : 26 * 1024 * 1024;
+  const note = h("p", { class: "modal-note", text: `It downloads once (about ${fmtSize(size)}) from the official GitHub release and is verified before use.` });
+  let timer = null;
+  const stop = () => { if (timer) clearInterval(timer); timer = null; };
+  openModal({
+    title: `Install ${label}`,
+    subtitle: "Optional tool, stored on this PC only",
+    content: h("div", {},
+      h("p", { text: "The app downloads the tool, checks its checksum, and uses it locally. Nothing is uploaded." }),
+      note
+    ),
+    actions: [
+      { label: "Cancel", onClick: () => { stop(); closeModal(); } },
+      {
+        label: "Download",
+        class: "primary",
+        onClick: (setBusy) => new Promise((resolve) => {
+          setBusy(true);
+          note.textContent = "Starting the download…";
+          api(`/api/tools/${tool}/install`, { method: "POST" }).then(() => {
+            timer = setInterval(async () => {
+              let data = null;
+              try { data = await api("/api/tools"); } catch (_) { return; }
+              const state = data && data[tool];
+              if (!state) return;
+              if (state.installed) {
+                stop(); setBusy(false); closeModal(); after(); resolve();
+              } else if (state.state === "error") {
+                stop(); setBusy(false);
+                note.textContent = state.error || "The download failed.";
+                resolve();
+              } else if (state.state === "extracting") {
+                note.textContent = "Unpacking…";
+              } else {
+                note.textContent = `Downloading… ${Math.round((state.progress || 0) * 100)}%`;
+              }
+            }, 900);
+          }).catch((error) => {
+            setBusy(false);
+            note.textContent = error.message;
+            resolve();
+          });
+        })
+      }
+    ]
+  });
 }
 function downloadItem(item) {
   if (!item) return;
@@ -2421,6 +3412,30 @@ function downloadItem(item) {
   document.body.append(link);
   link.click();
   link.remove();
+}
+function promptReupload(item) {
+  openModal({
+    title: "Fix video streaming?",
+    content: h("div", {},
+      h("p", { text: "The file is downloaded from Telegram, sent again as a video or audio file so it can stream, and the old copy is removed. Large files take a while." }),
+      h("p", { class: "modal-note", text: `${item.name} — ${fmtSize(item.size || 0)}` })
+    ),
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Re-upload",
+        onClick: async () => {
+          try {
+            await api(`/api/items/${item.id}/reupload`, { method: "POST" });
+            closeModal();
+            toast("Re-uploading so the video can stream — see Transfers.", "success", 6000);
+            showUploadPanel();
+            startTransferPolling();
+          } catch (error) { toast(error.message, "error"); }
+        }
+      }
+    ]
+  });
 }
 async function startMergeDownload(item) {
   if (!item || !item.part_of) return;
@@ -2469,30 +3484,142 @@ async function bulkCopyLinks() {
     toast(`Copied ${plural(lines.length, "link")} to the clipboard.`, "success");
   } catch (error) { toast(error.message, "error"); }
 }
+function folderTreePicker(current) {
+  const folders = S.nav.folders || [];
+  const byPath = new Map(folders.map((entry) => [entry.folder.toLowerCase(), entry]));
+  const query = inputEl({ type: "search", placeholder: "Search folders, or type a new name", autocomplete: "off", spellcheck: "false" });
+  const tree = h("div", { class: "picker-tree", role: "tree" });
+  const empty = h("p", { class: "picker-empty", text: "No folders yet. Type a name above to create one." });
+  const status = h("div", { class: "picker-status" });
+  const collapsed = new Set();
+  let selected = byPath.has(String(current || "").toLowerCase()) ? current : "";
+
+  const parentOf = (entry) => byPath.get(String(entry.parent || "").toLowerCase()) || null;
+  const hasChildren = (entry) => folders.some((other) => String(other.parent || "").toLowerCase() === entry.folder.toLowerCase());
+  const hiddenByCollapse = (entry) => {
+    for (let parent = parentOf(entry); parent; parent = parentOf(parent)) {
+      if (collapsed.has(parent.folder.toLowerCase())) return true;
+    }
+    return false;
+  };
+  const ancestors = (entry) => {
+    const set = new Set();
+    for (let parent = parentOf(entry); parent; parent = parentOf(parent)) set.add(parent.folder.toLowerCase());
+    return set;
+  };
+  const pathRow = (entry, depth, open, selectedPath) => {
+    const path = entry.folder;
+    const chevron = h("span", {
+      class: "picker-chev" + (hasChildren(entry) ? (open ? " open" : "") : " leaf"),
+      "aria-hidden": "true",
+      html: svgRaw("chevron")
+    });
+    if (hasChildren(entry) && !query.value.trim()) {
+      chevron.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (collapsed.has(path.toLowerCase())) collapsed.delete(path.toLowerCase());
+        else collapsed.add(path.toLowerCase());
+        render();
+      });
+    }
+    const row = h("button", {
+      class: "picker-row" + (selectedPath ? " selected" : ""),
+      type: "button",
+      role: "treeitem",
+      "aria-selected": selectedPath ? "true" : "false",
+      title: path,
+      style: `--depth:${Math.min(depth, 8)}`
+    },
+      chevron,
+      folderIconNode(entry),
+      h("span", { class: "picker-name", text: entry.name || path }),
+      h("span", { class: "picker-count", text: entry.n ? String(entry.n) : "" })
+    );
+    row.addEventListener("click", () => { selected = path; render(); });
+    return row;
+  };
+  const render = () => {
+    const needle = query.value.trim().toLowerCase();
+    const keep = new Set();
+    if (needle) {
+      for (const entry of folders) {
+        if (!entry.folder.toLowerCase().includes(needle)) continue;
+        keep.add(entry.folder.toLowerCase());
+        for (const path of ancestors(entry)) keep.add(path);
+      }
+    }
+    tree.replaceChildren();
+    for (const entry of folders) {
+      const path = entry.folder.toLowerCase();
+      if (keep.size && !keep.has(path)) continue;
+      if (!needle && hiddenByCollapse(entry)) continue;
+      const open = Boolean(needle) || !collapsed.has(path);
+      tree.append(pathRow(entry, entry.depth || 0, open, selected.toLowerCase() === path));
+    }
+    const typed = query.value.trim();
+    const createPath = typed.split("/").map((part) => part.trim()).filter(Boolean).join("/");
+    if (createPath && !byPath.has(createPath.toLowerCase())) {
+      const row = h("button", {
+        class: "picker-row create" + (selected.toLowerCase() === createPath.toLowerCase() ? " selected" : ""),
+        type: "button",
+        title: `Create ${createPath}`,
+        style: "--depth:0"
+      },
+        h("span", { class: "picker-chev leaf", "aria-hidden": "true", html: svgRaw("chevron") }),
+        h("span", { class: "picker-plus", html: svgRaw("plus") }),
+        h("span", { class: "picker-name", text: `Create “${createPath}”` })
+      );
+      row.addEventListener("click", () => { selected = createPath; render(); });
+      tree.append(row);
+    }
+    if (!tree.children.length) tree.append(empty);
+    status.textContent = selected || "Choose a folder";
+    status.classList.toggle("unset", !selected);
+  };
+  query.addEventListener("input", render);
+  query.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const typed = query.value.trim();
+    const hit = byPath.get(typed.toLowerCase());
+    if (hit) { selected = hit.folder; render(); return; }
+    const createPath = typed.split("/").map((part) => part.trim()).filter(Boolean).join("/");
+    if (createPath) { selected = createPath; render(); }
+  });
+  render();
+  setTimeout(() => {
+    const current = tree.querySelector(".picker-row.selected");
+    if (current) current.scrollIntoView({ block: "nearest" });
+  }, 0);
+  return {
+    element: h("div", { class: "move-picker" },
+      h("div", { class: "picker-search" },
+        h("span", { class: "picker-search-ico", "aria-hidden": "true", html: svgRaw("search") }),
+        query
+      ),
+      tree,
+      status
+    ),
+    get value() { return selected; }
+  };
+}
 function promptBulkMove() {
   const ids = bulkIds();
   if (!ids.length) return;
-  const input = inputEl({ type: "text", value: S.folder || "", maxlength: "180", autocomplete: "off", list: "bulk-folder-options", placeholder: "Folder name" });
-  const datalist = h("datalist", { id: "bulk-folder-options" });
-  for (const folder of S.nav.folders || []) datalist.append(h("option", { value: folder.folder }));
-  const quick = h("div", { class: "dialog-list" });
-  for (const folder of S.nav.folders || []) {
-    const chip = h("button", { type: "button", text: folder.folder });
-    chip.addEventListener("click", () => { input.value = folder.folder; });
-    quick.append(chip);
-  }
+  const picker = folderTreePicker(S.folder || "");
   openModal({
     title: `Move ${plural(ids.length, "file")}`,
     subtitle: "Files stay in Telegram; only their folder in the explorer changes.",
-    content: h("div", {}, field("Move to folder", input, "Type a new name to create a folder."), datalist, quick),
+    wide: true,
+    content: picker.element,
     actions: [
       { label: "Cancel", onClick: closeModal },
       {
-        label: "Move",
+        label: "Move here",
         class: "primary",
         onClick: async () => {
-          const folder = input.value.trim();
-          if (!folder) { toast("Choose or type a folder name.", "error"); return; }
+          const folder = picker.value;
+          if (!folder) { toast("Choose a folder first.", "error"); return; }
           try {
             const data = await api("/api/batch/move", { method: "POST", body: { item_ids: ids, folder } });
             closeModal();
@@ -2504,7 +3631,6 @@ function promptBulkMove() {
       }
     ]
   });
-  input.focus();
 }
 function promptBulkDelete() {
   const ids = bulkIds();
@@ -2646,38 +3772,26 @@ function promptRename() {
 function promptMove() {
   const item = selectedItem();
   if (!item) return;
-  const input = inputEl({ type: "text", value: item.folder || "", maxlength: "180", autocomplete: "off", list: "folder-options", placeholder: "Folder name" });
-  const datalist = h("datalist", { id: "folder-options" });
-  for (const folder of S.nav.folders || []) datalist.append(h("option", { value: folder.folder }));
-  const quick = h("div", { class: "dialog-list" });
-  for (const folder of S.nav.folders || []) {
-    const chip = h("button", { type: "button", text: folder.folder });
-    chip.addEventListener("click", () => { input.value = folder.folder; });
-    quick.append(chip);
-  }
-  const content = h("div", {},
-    field("Move to folder", input, "Type a new name to create a folder."),
-    datalist,
-    quick,
-    h("p", { class: "modal-note", text: "Folders are part of the explorer’s local index. The file stays in the same Telegram channel." })
-  );
+  const picker = folderTreePicker(item.folder || "");
   openModal({
     title: "Move file",
     subtitle: item.name,
-    content,
+    wide: true,
+    content: picker.element,
     actions: [
       { label: "Cancel", onClick: closeModal },
       {
-        label: "Move",
+        label: "Move here",
         class: "primary",
         onClick: async () => {
-          const folder = input.value.trim();
-          if (!folder) { toast("Choose or type a folder name.", "error"); return; }
+          const folder = picker.value;
+          if (!folder) { toast("Choose a folder first.", "error"); return; }
+          if (folder.toLowerCase() === String(item.folder || "").toLowerCase()) { closeModal(); return; }
           try {
             await api(`/api/items/${item.id}`, { method: "PATCH", body: { folder } });
             closeModal();
-            toast("Moved.", "success");
-            await refreshLibrary(false);
+            toast(`Moved to ${folder}.`, "success");
+            await Promise.all([loadNav(), refreshLibrary(false)]);
             if (S.items.some((entry) => entry.id === item.id)) selectItem(item.id);
             else clearSelection();
           } catch (error) { toast(error.message, "error"); }
@@ -2749,6 +3863,125 @@ function promptNote(item) {
     ]
   });
   area.focus();
+}
+function promptThumbPicker(item) {
+  if (!item) return;
+  let chosen = 0;
+  let timer = null;
+  let disposed = false;
+  const grid = h("div", { class: "thumb-picker" });
+  const status = h("p", { class: "modal-note", text: "Extracting frames from the video…" });
+  const tools = h("div", { class: "thumb-picker-tools" });
+  const stop = () => {
+    disposed = true;
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
+  const useFrame = async (setBusy) => {
+    if (!chosen) { toast("Pick one of the frames first.", "info"); return; }
+    setBusy(true);
+    try {
+      await api(`/api/thumb-picker/${item.id}/select`, { method: "POST", body: { index: chosen } });
+      stop();
+      closeModal();
+      toast("Thumbnail updated.", "success");
+      await loadItems({ reset: true });
+      loadNav();
+      if (S.items.some((entry) => entry.id === item.id)) selectItem(item.id);
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  openModal({
+    title: "Choose a thumbnail",
+    subtitle: item.name,
+    wide: true,
+    content: h("div", {},
+      h("p", { class: "modal-note", text: "Five frames are grabbed evenly across the video. Click the one that should stand for it in the library, or shuffle for five more from random points." }),
+      grid,
+      status,
+      tools
+    ),
+    actions: [
+      { label: "Cancel", onClick: () => { stop(); closeModal(); } },
+      { label: "Use thumbnail", class: "primary", onClick: useFrame }
+    ]
+  });
+  const fail = (text, retry) => {
+    status.textContent = text;
+    tools.replaceChildren();
+    if (!retry) return;
+    const button = h("button", { class: "btn", type: "button", text: "Try again" });
+    button.addEventListener("click", () => {
+      tools.replaceChildren();
+      status.textContent = "Extracting frames from the video…";
+      load(true);
+    });
+    tools.append(button);
+  };
+  const showFrames = (data) => {
+    status.textContent = "Click the frame you want, then press Use thumbnail.";
+    grid.replaceChildren();
+    for (const candidate of data.candidates || []) {
+      const tile = h("button", { type: "button", class: "thumb-choice", title: fmtDuration(candidate.time) },
+        h("img", { src: candidate.url, alt: "", loading: "lazy" }),
+        h("span", { text: fmtDuration(candidate.time) })
+      );
+      tile.addEventListener("click", () => {
+        chosen = candidate.index;
+        grid.querySelectorAll(".thumb-choice").forEach((node) => node.classList.toggle("selected", node === tile));
+      });
+      grid.append(tile);
+    }
+    const shuffle = h("button", { class: "btn", type: "button", text: "Shuffle frames" });
+    shuffle.addEventListener("click", () => shuffleFrames(shuffle));
+    tools.replaceChildren(shuffle);
+  };
+  const shuffleFrames = async (button) => {
+    if (disposed) return;
+    if (timer) { clearTimeout(timer); timer = null; }
+    button.disabled = true;
+    chosen = 0;
+    grid.replaceChildren();
+    status.textContent = "Grabbing five new frames from random points…";
+    let data = null;
+    try {
+      data = await api(`/api/thumb-picker/${item.id}/shuffle`, { method: "POST" });
+    } catch (error) {
+      if (!disposed) fail(error.message, true);
+      return;
+    }
+    if (disposed || !grid.isConnected) return;
+    if (data.state === "ready") { showFrames(data); return; }
+    if (data.state === "error") { fail(data.reason || "Could not generate frames.", true); return; }
+    timer = setTimeout(() => load(false), 1500);
+  };
+  const load = async (force) => {
+    if (disposed) return;
+    let data = null;
+    try {
+      data = await api(`/api/thumb-picker/${item.id}${force ? "?force=1" : ""}`);
+    } catch (error) {
+      if (!disposed) fail(error.message, true);
+      return;
+    }
+    // Closing the dialog (Cancel, ×, Escape) unmounts the grid; stop then.
+    if (disposed || !grid.isConnected) return;
+    if (data.state === "ready") { showFrames(data); return; }
+    if (data.state === "missing-tool") {
+      fail("Choosing a thumbnail needs ffmpeg, which is not installed yet.", false);
+      const install = h("button", { class: "btn", type: "button", text: "Install ffmpeg" });
+      install.addEventListener("click", () => promptInstallTool("ffmpeg", () => promptThumbPicker(item)));
+      tools.append(install);
+      return;
+    }
+    if (data.state === "error") { fail(data.reason || "Could not generate frames.", true); return; }
+    if (data.state === "unavailable") { fail(data.reason || "This file has no video frames.", false); return; }
+    timer = setTimeout(() => load(false), 2000);
+  };
+  load(false);
 }
 function promptFolderProperties(target) {
   const folder = typeof target === "string" ? folderEntry(target) : target;
@@ -3143,7 +4376,7 @@ function promptSettings() {
         : btn("Create PIN…", "btn", promptPinSetup),
       st.pin_set ? btn("Remove PIN…", "btn danger", promptPinRemove) : null
     ),
-    h("p", { class: "modal-note", text: "The PIN is asked when the app opens and hides the library until you enter it. The lock button in the title bar locks the app immediately. Only a hash of the PIN is stored." })
+    h("p", { class: "modal-note", text: "The PIN is asked when the app opens and hides the library until you enter it. The lock button in the title bar locks the app immediately. Only a hash of the PIN is stored; if you forget it, Forgot PIN? on the lock screen sends a code to Saved Messages in Telegram to set a new one." })
   );
   const sectionConnection = h("div", { class: "settings-section" },
     h("h3", { text: "Connection" }),
@@ -3191,20 +4424,41 @@ function promptSettings() {
     actions: [{ label: "Close", onClick: closeModal }]
   });
 }
+function confirmQuit() {
+  const bot = S.status && S.status.bot;
+  const botLine = bot && bot.running
+    ? "The storage bot is running; it is stopped before the app closes."
+    : "The storage bot is not running.";
+  openModal({
+    title: "Quit Telegram File Explorer?",
+    subtitle: "The app exits and the storage bot stops.",
+    content: h("div", {},
+      h("p", { text: botLine }),
+      h("p", { class: "modal-note", text: "The library snapshot is saved to your Telegram vault first, then the window closes. Files stay in Telegram, and the bot starts again next time you open the app." })
+    ),
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Quit app", class: "danger", onClick: () => quitApp() }
+    ]
+  });
+}
 async function quitApp() {
+  if (S.quitting) return;
+  S.quitting = true;
   closeModal();
-  try { await api("/api/quit", { method: "POST" }); } catch (_) { /* shutting down */ }
   document.body.replaceChildren(
-    h("div", {
-      style: "display:grid;place-items:center;height:100vh;padding:32px;text-align:center;font:15px system-ui,sans-serif;color:#667085"
-    },
-      h("div", {},
-        h("strong", { text: "Telegram File Explorer has quit." }),
-        h("p", { text: "You can close this window." })
+    h("div", { class: "quit-screen" },
+      h("div", { class: "quit-card" },
+        h("span", { class: "spinner" }),
+        h("strong", { text: "Shutting down…" }),
+        h("p", { text: "Stopping the storage bot and saving the library snapshot to your vault. The window closes by itself." })
       )
     )
   );
-  try { window.close(); } catch (_) { /* browser may refuse */ }
+  try {
+    await api("/api/quit", { method: "POST" });
+  } catch (_) { /* the server may stop before answering */ }
+  try { window.close(); } catch (_) { /* WebView window is closed by the app */ }
 }
 function promptLogout() {
   openModal({
@@ -3284,6 +4538,12 @@ function openItemMenu(event, item) {
   const entries = [
     { label: "Open", icon: "play", key: "Enter", onClick: () => openViewerFor(item) },
     { label: "Download", icon: "download", onClick: () => downloadItem(item) },
+    item.kind === "video"
+      ? { label: "Choose thumbnail…", icon: "image", onClick: () => promptThumbPicker(item) }
+      : null,
+    item.kind === "document" && !item.part_of
+      ? { label: "Fix video streaming…", icon: "video", onClick: () => promptReupload(item) }
+      : null,
     item.part_of && item.part_of.count > 1
       ? { label: `Download complete file (${item.part_of.count} parts)`, icon: "download", onClick: () => startMergeDownload(item) }
       : null,
@@ -3841,10 +5101,40 @@ function bindEvents() {
   $("loadMoreBtn").addEventListener("click", loadMore);
   $("uploadsClose").addEventListener("click", () => { $("uploadPanel").hidden = true; });
   $("moreBtn").addEventListener("click", promptSettings);
+  $("quitBtn").addEventListener("click", confirmQuit);
+  $("vaultChip").addEventListener("click", toggleVaultMenu);
+  $("vaultRefreshBtn").addEventListener("click", (event) => {
+    event.stopPropagation();
+    loadVaults(true);
+  });
+  $("vaultNewBtn").addEventListener("click", (event) => {
+    event.stopPropagation();
+    promptNewVault();
+  });
+  $("vaultBotBtn").addEventListener("click", (event) => {
+    event.stopPropagation();
+    addStorageBot();
+  });
   $("botChip").addEventListener("click", toggleBot);
   $("lockBtn").addEventListener("click", lockNow);
+  $("lockVaultBtn").addEventListener("click", showLockVaults);
+  $("lockVaultBack").addEventListener("click", backToPin);
+  $("lockForgot").addEventListener("click", showRecovery);
+  $("lockBack").addEventListener("click", backToPin);
+  $("recoverSend").addEventListener("click", sendRecoveryCode);
+  $("recoverApply").addEventListener("click", applyRecovery);
+  $("recoverCode").addEventListener("input", () => digitsOnly($("recoverCode"), 6));
+  $("recoverPin").addEventListener("input", () => digitsOnly($("recoverPin"), 4));
+  $("recoverPin2").addEventListener("input", () => digitsOnly($("recoverPin2"), 4));
+  for (const id of ["recoverCode", "recoverPin", "recoverPin2"]) {
+    $(id).addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      applyRecovery();
+    });
+  }
   document.addEventListener("keydown", (event) => {
-    if ($("lockOverlay").hidden) return;
+    if ($("lockOverlay").hidden || !$("lockRecover").hidden || !$("lockVaults").hidden) return;
     if (/^\d$/.test(event.key)) pressLockKey(event.key);
     else if (event.key === "Backspace") pressLockKey("back");
     else if (event.key === "Escape") pressLockKey("clear");
@@ -3852,6 +5142,7 @@ function bindEvents() {
   });
   $("openBtn").addEventListener("click", () => openViewerFor(selectedItem()));
   $("downloadBtn").addEventListener("click", () => downloadItem(selectedItem()));
+  $("thumbBtn").addEventListener("click", () => promptThumbPicker(selectedItem()));
   $("completeBtn").addEventListener("click", () => startMergeDownload(selectedItem()));
   $("favoriteBtn").addEventListener("click", promptFavorite);
   $("restoreBtn").addEventListener("click", () => restoreItem(selectedItem()));
@@ -3891,6 +5182,19 @@ function bindEvents() {
     if (item) promptNote(item);
   });
   $("viewerClose").addEventListener("click", closeViewer);
+  $("viewerPrev").addEventListener("click", () => stepViewer(-1));
+  $("viewerNext").addEventListener("click", () => stepViewer(1));
+  $("viewerMpv").addEventListener("click", () => openInMpv(VIEWER.item));
+  $("viewerPreviews").addEventListener("click", () => {
+    const item = VIEWER.item;
+    if (!item) return;
+    promptInstallTool("ffmpeg", () => {
+      if (VIEWER.item && VIEWER.item.id === item.id) {
+        VIEWER.spriteTries = 0;
+        loadStoryboard(item, VIEWER.token);
+      }
+    });
+  });
   $("viewerStage").addEventListener("click", (event) => {
     if (event.target === $("viewerStage")) closeViewer();
   });
@@ -3899,6 +5203,7 @@ function bindEvents() {
   window.addEventListener("mousedown", (event) => {
     if (!event.target.closest("#contextMenu")) hideContextMenu();
     if (!event.target.closest(".upload-split")) $("uploadMenu").hidden = true;
+    if (!event.target.closest(".vault-wrap")) closeVaultMenu();
   });
   window.addEventListener("resize", hideContextMenu);
   $("content").addEventListener("scroll", hideContextMenu);
@@ -3933,13 +5238,57 @@ function bindEvents() {
       event.returnValue = "";
     }
   });
+  window.addEventListener("pagehide", () => saveViewerPosition(true));
 }
 
+function handleViewerKey(event) {
+  if (event.ctrlKey || event.altKey || event.metaKey) return;
+  const key = event.key.toLowerCase();
+  if (key === "n" || key === "p") {
+    event.preventDefault();
+    stepViewer(key === "n" ? 1 : -1);
+    return;
+  }
+  const player = VIEWER.player;
+  if (!player) {
+    if (VIEWER.gallery && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
+      event.preventDefault();
+      stepViewer(event.key === "ArrowRight" ? 1 : -1);
+    }
+    return;
+  }
+  if (player.el().contains(event.target)) return;
+  const seekBy = (delta) => {
+    event.preventDefault();
+    const duration = Number(player.duration() || 0);
+    const next = Number(player.currentTime() || 0) + delta;
+    player.currentTime(Math.max(0, duration ? Math.min(duration - 0.1, next) : next));
+  };
+  if (event.key === " " || key === "k") {
+    event.preventDefault();
+    if (player.paused()) { const playing = player.play(); if (playing && playing.catch) playing.catch(() => {}); }
+    else player.pause();
+  } else if (event.key === "ArrowRight") seekBy(5);
+  else if (event.key === "ArrowLeft") seekBy(-5);
+  else if (key === "l") seekBy(10);
+  else if (key === "j") seekBy(-10);
+  else if (key === "m") { event.preventDefault(); player.muted(!player.muted()); }
+  else if (key === "f") {
+    event.preventDefault();
+    if (player.isFullscreen()) player.exitFullscreen();
+    else player.requestFullscreen();
+  }
+}
 function handleKeydown(event) {
   if (event.key === "Escape") {
-    if (!$("viewerOverlay").hidden) { closeViewer(); event.preventDefault(); return; }
-    if (!$("contextMenu").hidden) { hideContextMenu(); event.preventDefault(); return; }
+    if (document.fullscreenElement) return;
     if (!$("modalRoot").hidden) { closeModal(); event.preventDefault(); return; }
+    if (!$("viewerOverlay").hidden) {
+      if (VIEWER.gallery && VIEWER.gallery.fulled) { VIEWER.gallery.exit(); event.preventDefault(); return; }
+      closeViewer(); event.preventDefault(); return;
+    }
+    if (!$("contextMenu").hidden) { hideContextMenu(); event.preventDefault(); return; }
+    if (S.vaultMenuOpen) { closeVaultMenu(); event.preventDefault(); return; }
     if (isEditableTarget(event.target)) return;
     if (S.selection.size) {
       clearSelection();
@@ -3956,7 +5305,8 @@ function handleKeydown(event) {
     return;
   }
   if (!$("loginOverlay").hidden) return;
-  if (!$("modalRoot").hidden || !$("viewerOverlay").hidden) return;
+  if (!$("modalRoot").hidden) return;
+  if (!$("viewerOverlay").hidden) { handleViewerKey(event); return; }
   if (event.ctrlKey && event.key.toLowerCase() === "f") {
     event.preventDefault();
     $("searchInput").focus();

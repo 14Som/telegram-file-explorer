@@ -412,12 +412,13 @@ def run_window(url: str, uv: Optional[uvicorn.Server], thread: Optional[threadin
             server.QUIT.set()
             uv.should_exit = True
             if thread is not None:
-                thread.join(timeout=5)
+                # Vault save and stopping the storage bot both run on the way out.
+                thread.join(timeout=20)
                 if thread.is_alive():
                     # Open media streams can delay uvicorn's graceful stop.
                     log.warning("Server is still shutting down; forcing it closed")
                     uv.force_exit = True
-                    thread.join(timeout=3)
+                    thread.join(timeout=5)
                 if thread.is_alive():
                     log.warning("Server did not stop; exiting the process")
                     clear_server_file()

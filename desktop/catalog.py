@@ -11,7 +11,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS items (
     hidden INTEGER NOT NULL DEFAULT 0,
     thumb_version INTEGER NOT NULL DEFAULT 0,
     has_thumb INTEGER NOT NULL DEFAULT 1,
+    play_pos REAL NOT NULL DEFAULT 0,
+    played_at TEXT NOT NULL DEFAULT '',
     UNIQUE(chat_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS idx_items_name ON items(name COLLATE NOCASE);
@@ -48,10 +50,23 @@ CREATE INDEX IF NOT EXISTS idx_items_folder ON items(folder COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_items_kind ON items(kind);
 CREATE INDEX IF NOT EXISTS idx_items_message ON items(message_id);
 CREATE TABLE IF NOT EXISTS folders (
-    name TEXT PRIMARY KEY COLLATE NOCASE,
+    chat_id INTEGER NOT NULL DEFAULT 0,
+    name TEXT NOT NULL COLLATE NOCASE,
     icon TEXT NOT NULL DEFAULT '',
     note TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (chat_id, name)
+);
+"""
+
+FOLDERS_DDL = """
+CREATE TABLE IF NOT EXISTS folders (
+    chat_id INTEGER NOT NULL DEFAULT 0,
+    name TEXT NOT NULL COLLATE NOCASE,
+    icon TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (chat_id, name)
 );
 """
 
@@ -104,7 +119,7 @@ ON CONFLICT(chat_id, message_id) DO UPDATE SET
     duration = excluded.duration,
     caption = COALESCE(excluded.caption, items.caption),
     tg_date = COALESCE(excluded.tg_date, items.tg_date),
-    has_thumb = excluded.has_thumb,
+    has_thumb = MAX(items.has_thumb, excluded.has_thumb),
     name = CASE WHEN items.name_source = 'telegram'
                 THEN excluded.name ELSE items.name END,
     folder = CASE WHEN items.folder_source = 'default'
@@ -173,10 +188,10 @@ def row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
 
 
 class Catalog:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, chat_id: Optional[int] = None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.init()
+        self.init(chat_id)
 
     @contextmanager
     def connect(self):
@@ -190,7 +205,7 @@ class Catalog:
         finally:
             conn.close()
 
-    def init(self) -> None:
+    def init(self, chat_id: Optional[int] = None) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(items)")}
@@ -203,18 +218,37 @@ class Catalog:
                 "hidden": "INTEGER NOT NULL DEFAULT 0",
                 "thumb_version": "INTEGER NOT NULL DEFAULT 0",
                 "has_thumb": "INTEGER NOT NULL DEFAULT 1",
+                "play_pos": "REAL NOT NULL DEFAULT 0",
+                "played_at": "TEXT NOT NULL DEFAULT ''",
             }
             for name, ddl in additions.items():
                 if name not in columns:
                     conn.execute(f"ALTER TABLE items ADD COLUMN {name} {ddl}")
             folder_columns = {row["name"] for row in conn.execute("PRAGMA table_info(folders)")}
-            folder_additions = {
-                "icon": "TEXT NOT NULL DEFAULT ''",
-                "note": "TEXT NOT NULL DEFAULT ''",
-            }
-            for name, ddl in folder_additions.items():
-                if name not in folder_columns:
-                    conn.execute(f"ALTER TABLE folders ADD COLUMN {name} {ddl}")
+            if "chat_id" not in folder_columns:
+                # Older libraries kept one folder table for the single channel.
+                # Move those folders onto the vault that is open right now.
+                conn.execute("ALTER TABLE folders RENAME TO folders_legacy")
+                conn.executescript(FOLDERS_DDL)
+                icon = "icon" if "icon" in folder_columns else "''"
+                note = "note" if "note" in folder_columns else "''"
+                created = (
+                    "created_at" if "created_at" in folder_columns else "datetime('now')"
+                )
+                conn.execute(
+                    f"INSERT INTO folders (chat_id, name, icon, note, created_at)"
+                    f" SELECT ?, name, {icon}, {note}, {created} FROM folders_legacy",
+                    (int(chat_id or 0),),
+                )
+                conn.execute("DROP TABLE folders_legacy")
+            else:
+                folder_additions = {
+                    "icon": "TEXT NOT NULL DEFAULT ''",
+                    "note": "TEXT NOT NULL DEFAULT ''",
+                }
+                for name, ddl in folder_additions.items():
+                    if name not in folder_columns:
+                        conn.execute(f"ALTER TABLE folders ADD COLUMN {name} {ddl}")
             conn.execute("UPDATE items SET folder = 'Other' WHERE folder = ''")
             conn.execute("DELETE FROM folders WHERE name = ''")
 
@@ -397,12 +431,15 @@ class Catalog:
         }
 
     @staticmethod
-    def _insert_ancestors(conn: sqlite3.Connection, path: str) -> None:
+    def _insert_ancestors(
+        conn: sqlite3.Connection, path: str, chat_id: Optional[int] = None
+    ) -> None:
         parts = path.split("/")
+        scope = int(chat_id or 0)
         for index in range(1, len(parts) + 1):
             conn.execute(
-                "INSERT OR IGNORE INTO folders (name) VALUES (?)",
-                ("/".join(parts[:index]),),
+                "INSERT OR IGNORE INTO folders (chat_id, name) VALUES (?, ?)",
+                (scope, "/".join(parts[:index])),
             )
 
     def folders(self, chat_id: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -417,9 +454,15 @@ class Catalog:
                 f" FROM items {clause} GROUP BY folder",
                 params,
             ).fetchall()
-            meta_rows = conn.execute(
-                "SELECT name, icon, note FROM folders"
-            ).fetchall()
+            if chat_id is not None:
+                meta_rows = conn.execute(
+                    "SELECT name, icon, note FROM folders WHERE chat_id = ?",
+                    (int(chat_id),),
+                ).fetchall()
+            else:
+                meta_rows = conn.execute(
+                    "SELECT name, icon, note FROM folders"
+                ).fetchall()
         direct: Dict[str, Tuple[int, int]] = {}
         for row in rows:
             path = clean_folder_path(row["folder"], "")
@@ -463,6 +506,60 @@ class Catalog:
             )
         return sorted(entries, key=lambda value: value["folder"].lower())
 
+    def folder_covers(
+        self,
+        chat_id: Optional[int] = None,
+        per_folder: int = 4,
+        has_thumb_file: Optional[Callable[[int], bool]] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Cover items per folder, keyed by lowercased folder path.
+
+        A folder's covers include files from its subfolders, mirroring the
+        recursive file counts shown in the sidebar. Images come first, then
+        videos, newest first; only thumbnails already cached on disk are
+        preferred so building the nav never talks to Telegram.
+        """
+        clause = "WHERE hidden = 0 AND has_thumb = 1"
+        params: List[Any] = []
+        if chat_id is not None:
+            clause += " AND chat_id = ?"
+            params.append(int(chat_id))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT id, folder, kind, thumb_version FROM items {clause}"
+                " ORDER BY CASE kind WHEN 'image' THEN 0 WHEN 'video' THEN 1"
+                " WHEN 'gif' THEN 2 ELSE 3 END,"
+                " COALESCE(tg_date, added_at) DESC, id DESC",
+                params,
+            ).fetchall()
+        buckets: Dict[str, List[Dict[str, Any]]] = {}
+        limit = max(per_folder * 3, per_folder)
+        for row in rows:
+            path = clean_folder_path(row["folder"], "")
+            if not path:
+                continue
+            item = {
+                "id": int(row["id"]),
+                "kind": row["kind"] or "other",
+                "version": int(row["thumb_version"] or 0),
+            }
+            parts = path.split("/")
+            for index in range(len(parts), 0, -1):
+                prefix = "/".join(parts[:index]).lower()
+                bucket = buckets.setdefault(prefix, [])
+                if len(bucket) < limit:
+                    bucket.append(item)
+        covers: Dict[str, List[Dict[str, Any]]] = {}
+        for path, items in buckets.items():
+            if has_thumb_file is not None:
+                cached = [item for item in items if has_thumb_file(item["id"])]
+                picked = cached[:per_folder] or items[:per_folder]
+            else:
+                picked = items[:per_folder]
+            if picked:
+                covers[path] = picked
+        return covers
+
     def folder_info(
         self, name: str, chat_id: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
@@ -474,22 +571,24 @@ class Catalog:
                 return entry
         return None
 
-    def create_folder(self, name: str) -> str:
+    def create_folder(self, name: str, chat_id: Optional[int] = None) -> str:
         folder = clean_folder_path(name, "")
         if not folder:
             raise ValueError("Folder name cannot be empty.")
+        scope = int(chat_id or 0)
         with self.connect() as conn:
             existing = conn.execute(
-                "SELECT name FROM folders WHERE name = ? COLLATE NOCASE", (folder,)
+                "SELECT name FROM folders WHERE chat_id = ? AND name = ? COLLATE NOCASE",
+                (scope, folder),
             ).fetchone()
             if existing is None:
                 existing = conn.execute(
-                    "SELECT folder AS name FROM items WHERE folder = ? COLLATE NOCASE"
-                    " LIMIT 1",
-                    (folder,),
+                    "SELECT folder AS name FROM items WHERE chat_id = ?"
+                    " AND folder = ? COLLATE NOCASE LIMIT 1",
+                    (scope, folder),
                 ).fetchone()
             canonical = str(existing["name"]) if existing is not None else folder
-            self._insert_ancestors(conn, canonical)
+            self._insert_ancestors(conn, canonical, scope)
         return canonical
 
     def set_folder_meta(
@@ -497,10 +596,12 @@ class Catalog:
         name: str,
         icon: Optional[str] = None,
         note: Optional[str] = None,
+        chat_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         folder = clean_folder_path(name, "")
         if not folder:
             raise ValueError("Folder name cannot be empty.")
+        scope = int(chat_id or 0)
         updates: Dict[str, Any] = {}
         if icon is not None:
             clean_icon = re.sub(r"[\r\n\t]", "", str(icon)).strip()[:32]
@@ -508,14 +609,15 @@ class Catalog:
         if note is not None:
             updates["note"] = str(note).strip()[:4000]
         with self.connect() as conn:
-            self._insert_ancestors(conn, folder)
+            self._insert_ancestors(conn, folder, scope)
             if updates:
                 assignments = ", ".join(f"{key} = ?" for key in updates)
                 conn.execute(
-                    f"UPDATE folders SET {assignments} WHERE name = ? COLLATE NOCASE",
-                    (*updates.values(), folder),
+                    f"UPDATE folders SET {assignments}"
+                    " WHERE chat_id = ? AND name = ? COLLATE NOCASE",
+                    (*updates.values(), scope, folder),
                 )
-        return self.folder_info(folder) or {
+        return self.folder_info(folder, chat_id) or {
             "folder": folder,
             "name": folder_leaf(folder),
             "parent": folder_parent(folder),
@@ -528,7 +630,9 @@ class Catalog:
             "note": updates.get("note", ""),
         }
 
-    def rename_folder(self, old_name: str, new_name: str) -> str:
+    def rename_folder(
+        self, old_name: str, new_name: str, chat_id: Optional[int] = None
+    ) -> str:
         old = clean_folder_path(old_name, "")
         if not old:
             raise ValueError("Folder not found.")
@@ -540,39 +644,44 @@ class Catalog:
         if not target:
             raise ValueError("Folder name cannot be empty.")
         case_only = old.lower() == target.lower()
+        scope = int(chat_id or 0)
         with self.connect() as conn:
             exists = conn.execute(
-                "SELECT 1 FROM folders WHERE name = ? COLLATE NOCASE"
-                " UNION ALL SELECT 1 FROM items WHERE folder = ? COLLATE NOCASE LIMIT 1",
-                (old, old),
+                "SELECT 1 FROM folders WHERE chat_id = ? AND name = ? COLLATE NOCASE"
+                " UNION ALL SELECT 1 FROM items WHERE chat_id = ?"
+                " AND folder = ? COLLATE NOCASE LIMIT 1",
+                (scope, old, scope, old),
             ).fetchone()
             if exists is None:
                 raise ValueError("Folder not found.")
+            prefix = f"{_like(old.lower())}/%"
             if not case_only:
                 conflict = conn.execute(
-                    "SELECT 1 FROM folders WHERE name = ? COLLATE NOCASE"
-                    " UNION ALL SELECT 1 FROM items WHERE folder = ? COLLATE NOCASE LIMIT 1",
-                    (target, target),
+                    "SELECT 1 FROM folders WHERE chat_id = ?"
+                    " AND name = ? COLLATE NOCASE"
+                    " UNION ALL SELECT 1 FROM items WHERE chat_id = ?"
+                    " AND folder = ? COLLATE NOCASE LIMIT 1",
+                    (scope, target, scope, target),
                 ).fetchone()
                 if conflict is not None:
                     raise ValueError("A folder with that name already exists.")
-            prefix = f"{_like(old.lower())}/%"
             conn.execute(
                 "UPDATE items SET folder = ? || substr(folder, ?),"
                 " folder_source = 'user'"
-                " WHERE folder = ? COLLATE NOCASE"
-                " OR lower(folder) LIKE ? ESCAPE '\\'",
-                (target, len(old) + 1, old, prefix),
+                " WHERE chat_id = ? AND (folder = ? COLLATE NOCASE"
+                " OR lower(folder) LIKE ? ESCAPE '\\')",
+                (target, len(old) + 1, scope, old, prefix),
             )
             rows = conn.execute(
                 "SELECT name, icon, note FROM folders"
-                " WHERE name = ? COLLATE NOCASE OR lower(name) LIKE ? ESCAPE '\\'",
-                (old, prefix),
+                " WHERE chat_id = ? AND (name = ? COLLATE NOCASE"
+                " OR lower(name) LIKE ? ESCAPE '\\')",
+                (scope, old, prefix),
             ).fetchall()
             conn.execute(
-                "DELETE FROM folders WHERE name = ? COLLATE NOCASE"
-                " OR lower(name) LIKE ? ESCAPE '\\'",
-                (old, prefix),
+                "DELETE FROM folders WHERE chat_id = ? AND (name = ? COLLATE NOCASE"
+                " OR lower(name) LIKE ? ESCAPE '\\')",
+                (scope, old, prefix),
             )
             mapped = [
                 (target + row["name"][len(old):], row["icon"], row["note"])
@@ -583,40 +692,60 @@ class Catalog:
             for path, icon, note in mapped:
                 parent = folder_parent(path)
                 if parent:
-                    self._insert_ancestors(conn, parent)
+                    self._insert_ancestors(conn, parent, scope)
                 conn.execute(
-                    "INSERT INTO folders (name, icon, note) VALUES (?, ?, ?)"
-                    " ON CONFLICT(name) DO UPDATE SET icon = excluded.icon,"
+                    "INSERT INTO folders (chat_id, name, icon, note)"
+                    " VALUES (?, ?, ?, ?)"
+                    " ON CONFLICT(chat_id, name) DO UPDATE SET icon = excluded.icon,"
                     " note = excluded.note",
-                    (path, icon, note),
+                    (scope, path, icon, note),
                 )
         return target
 
-    def delete_folder(self, name: str) -> bool:
+    def delete_folder(self, name: str, chat_id: Optional[int] = None) -> bool:
         folder = clean_folder_path(name, "")
         if not folder:
             return False
+        scope = int(chat_id or 0)
         prefix = f"{_like(folder.lower())}/%"
         with self.connect() as conn:
             items = int(
                 conn.execute(
-                    "SELECT COUNT(*) AS n FROM items WHERE folder = ? COLLATE NOCASE"
-                    " OR lower(folder) LIKE ? ESCAPE '\\'",
-                    (folder, prefix),
+                    "SELECT COUNT(*) AS n FROM items WHERE chat_id = ?"
+                    " AND (folder = ? COLLATE NOCASE"
+                    " OR lower(folder) LIKE ? ESCAPE '\\')",
+                    (scope, folder, prefix),
                 ).fetchone()["n"]
             )
             children = int(
                 conn.execute(
-                    "SELECT COUNT(*) AS n FROM folders WHERE lower(name) LIKE ? ESCAPE '\\'",
-                    (prefix,),
+                    "SELECT COUNT(*) AS n FROM folders WHERE chat_id = ?"
+                    " AND lower(name) LIKE ? ESCAPE '\\'",
+                    (scope, prefix),
                 ).fetchone()["n"]
             )
             if items or children:
                 return False
             cur = conn.execute(
-                "DELETE FROM folders WHERE name = ? COLLATE NOCASE", (folder,)
+                "DELETE FROM folders WHERE chat_id = ? AND name = ? COLLATE NOCASE",
+                (scope, folder),
             )
             return cur.rowcount > 0
+
+    def adopt_unscoped_folders(self, chat_id: int) -> int:
+        """Claim folder rows migrated before a vault was chosen."""
+        try:
+            scope = int(chat_id)
+        except (TypeError, ValueError):
+            return 0
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO folders (chat_id, name, icon, note, created_at)"
+                " SELECT ?, name, icon, note, created_at FROM folders WHERE chat_id = 0",
+                (scope,),
+            )
+            cur = conn.execute("DELETE FROM folders WHERE chat_id = 0")
+            return cur.rowcount
 
     def folder_items(
         self,
@@ -715,7 +844,7 @@ class Catalog:
         allowed = {
             "name", "folder", "tags", "favorite", "hidden", "caption", "note",
             "name_source", "folder_source", "tags_source", "fav_source",
-            "has_thumb", "thumb_version",
+            "has_thumb", "thumb_version", "play_pos", "played_at",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
@@ -735,7 +864,9 @@ class Catalog:
 
     def move(self, item_id: int, folder: str) -> Optional[Dict[str, Any]]:
         folder = clean_folder_path(folder, "Other")
-        self.create_folder(folder)
+        item = self.get(item_id)
+        if item is not None:
+            self.create_folder(folder, item.get("chat_id"))
         return self.update(item_id, folder=folder, folder_source="user")
 
     def set_note(self, item_id: int, note: str) -> Optional[Dict[str, Any]]:
@@ -755,6 +886,41 @@ class Catalog:
         with self.connect() as conn:
             cur = conn.execute("UPDATE items SET hidden = 1 WHERE id = ?", (item_id,))
             return cur.rowcount > 0
+
+    def ensure_has_thumb(self, item_ids: List[int]) -> int:
+        """Items with a stored custom thumbnail must stay visible after re-syncs."""
+        wanted = [int(item_id) for item_id in item_ids]
+        changed = 0
+        if not wanted:
+            return 0
+        with self.connect() as conn:
+            for start in range(0, len(wanted), 400):
+                chunk = wanted[start:start + 400]
+                marks = ",".join("?" * len(chunk))
+                cur = conn.execute(
+                    f"UPDATE items SET has_thumb = 1"
+                    f" WHERE has_thumb = 0 AND id IN ({marks})",
+                    chunk,
+                )
+                changed += cur.rowcount
+        return changed
+
+    def prune_snapshots(self, chat_id: Optional[int], keep: int) -> int:
+        """Drop library rows for vault-data snapshots beyond the newest ones."""
+        if chat_id is None:
+            return 0
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id FROM items WHERE chat_id = ?"
+                " AND name LIKE 'tfe-data-%.zip' ORDER BY name DESC",
+                (int(chat_id),),
+            ).fetchall()
+            stale = [int(row["id"]) for row in rows[max(0, int(keep)):]]
+            if stale:
+                conn.executemany(
+                    "DELETE FROM items WHERE id = ?", [(item_id,) for item_id in stale]
+                )
+            return len(stale)
 
     def delete(self, item_id: int) -> bool:
         with self.connect() as conn:

@@ -6,15 +6,42 @@
   <meta name="color-scheme" content="light dark">
   <title>Telegram File Explorer</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/vendor/videojs/video-js.min.css">
+  <link rel="stylesheet" href="/static/vendor/viewerjs/viewer.min.css">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <div class="app">
     <header class="titlebar">
       <div class="brand">
+        <button class="app-quit" id="quitBtn" type="button" title="Quit Telegram File Explorer" aria-label="Quit Telegram File Explorer"></button>
         <span class="brand-logo" id="brandLogo" aria-hidden="true"></span>
         <span class="brand-name">Telegram File Explorer</span>
-        <span class="vault-chip" id="vaultChip" hidden></span>
+        <div class="vault-wrap" id="vaultWrap" hidden>
+          <button class="vault-chip" id="vaultChip" type="button" aria-haspopup="menu" aria-expanded="false" title="Switch storage vault">
+            <span class="vault-chip-icon" id="vaultChipIcon" aria-hidden="true"></span>
+            <span class="vault-chip-text" id="vaultChipText"></span>
+            <span class="vault-chip-caret" id="vaultChipCaret" aria-hidden="true"></span>
+          </button>
+          <div class="vault-menu" id="vaultMenu" role="menu" aria-label="Storage vaults" hidden>
+            <div class="vault-menu-head">
+              <span>Storage vaults</span>
+              <button class="icon-btn small" id="vaultRefreshBtn" type="button" title="Scan Telegram for vaults" aria-label="Scan Telegram for vaults"></button>
+            </div>
+            <div class="vault-list" id="vaultList"></div>
+            <div class="vault-menu-note" id="vaultMenuNote" hidden></div>
+            <div class="vault-menu-foot">
+              <button class="vault-new" id="vaultBotBtn" type="button" title="Add the storage bot as an admin of this vault">
+                <span class="vault-new-icon" id="vaultBotIcon" aria-hidden="true"></span>
+                <span>Add storage bot</span>
+              </button>
+              <button class="vault-new" id="vaultNewBtn" type="button">
+                <span class="vault-new-icon" id="vaultNewIcon" aria-hidden="true"></span>
+                <span>New vault…</span>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="titlebar-center">
         <span class="conn-dot" id="connDot"></span>
@@ -97,30 +124,32 @@
           </div>
           <div class="breadcrumb" id="breadcrumb"></div>
           <div class="toolbar-spacer"></div>
-          <label class="searchbox">
-            <span class="search-icon" aria-hidden="true"></span>
-            <input id="searchInput" type="search" placeholder="Search files" autocomplete="off" spellcheck="false">
-            <kbd>Ctrl F</kbd>
-          </label>
-          <select class="select" id="kindSelect" title="Filter by type" aria-label="Filter by type">
-            <option value="">All types</option>
-          </select>
-          <button class="icon-btn filter-btn" id="filterBtn" title="Advanced filters" aria-label="Advanced filters">
-            <span class="icon-slot" id="filterIcon"></span>
-            <span class="filter-badge" id="filterBadge" hidden></span>
-          </button>
-          <select class="select" id="sortSelect" title="Sort by" aria-label="Sort by">
-            <option value="date">Date modified</option>
-            <option value="name">Name</option>
-            <option value="size">Size</option>
-            <option value="kind">Type</option>
-            <option value="folder">Folder</option>
-            <option value="added">Date added</option>
-          </select>
-          <button class="icon-btn" id="sortDirBtn" title="Descending" aria-label="Toggle sort direction"></button>
-          <div class="view-toggle" role="group" aria-label="View">
-            <button class="active" data-view="details" title="Details view"></button>
-            <button data-view="tiles" title="Large icons"></button>
+          <div class="toolbar-tools">
+            <label class="searchbox">
+              <span class="search-icon" aria-hidden="true"></span>
+              <input id="searchInput" type="search" placeholder="Search files" autocomplete="off" spellcheck="false">
+              <kbd>Ctrl F</kbd>
+            </label>
+            <select class="select" id="kindSelect" title="Filter by type" aria-label="Filter by type">
+              <option value="">All types</option>
+            </select>
+            <button class="icon-btn filter-btn" id="filterBtn" title="Advanced filters" aria-label="Advanced filters">
+              <span class="icon-slot" id="filterIcon"></span>
+              <span class="filter-badge" id="filterBadge" hidden></span>
+            </button>
+            <select class="select" id="sortSelect" title="Sort by" aria-label="Sort by">
+              <option value="date">Date modified</option>
+              <option value="name">Name</option>
+              <option value="size">Size</option>
+              <option value="kind">Type</option>
+              <option value="folder">Folder</option>
+              <option value="added">Date added</option>
+            </select>
+            <button class="icon-btn" id="sortDirBtn" title="Descending" aria-label="Toggle sort direction"></button>
+            <div class="view-toggle" role="group" aria-label="View">
+              <button class="active" data-view="details" title="Details view"></button>
+              <button data-view="tiles" title="Large icons"></button>
+            </div>
           </div>
         </div>
 
@@ -216,6 +245,7 @@
             <div class="preview-actions" id="fileActions">
               <button class="btn primary" id="openBtn">Open</button>
               <button class="btn" id="downloadBtn">Download</button>
+              <button class="btn" id="thumbBtn" hidden title="Pick the thumbnail shown in the library">Thumbnail</button>
               <button class="btn" id="completeBtn" hidden title="Download every part and join them into the original file">Download complete file</button>
               <button class="btn" id="favoriteBtn">Favorite</button>
               <button class="btn" id="restoreBtn" hidden>Restore</button>
@@ -259,8 +289,15 @@
 
   <div class="overlay viewer" id="viewerOverlay" hidden>
     <div class="viewer-bar">
-      <div class="viewer-title" id="viewerTitle"></div>
+      <div class="viewer-nav">
+        <button class="icon-btn" id="viewerPrev" type="button" title="Previous (P)" aria-label="Previous"></button>
+        <span class="viewer-counter" id="viewerCounter"></span>
+        <button class="icon-btn" id="viewerNext" type="button" title="Next (N)" aria-label="Next"></button>
+      </div>
+      <div class="viewer-name" id="viewerTitle"></div>
       <div class="viewer-actions">
+        <button class="viewer-chip" id="viewerPreviews" type="button" hidden title="Build seek preview thumbnails with ffmpeg">Seek previews</button>
+        <button class="icon-btn" id="viewerMpv" type="button" title="Open in mpv" aria-label="Open in mpv" hidden></button>
         <a class="icon-btn" id="viewerDownload" title="Download" download>↓</a>
         <button class="icon-btn" id="viewerClose" title="Close (Esc)" aria-label="Close">×</button>
       </div>
@@ -271,13 +308,47 @@
   <div class="overlay lock" id="lockOverlay" hidden>
     <div class="lock-card" id="lockCard">
       <div class="lock-logo" id="lockLogo"></div>
-      <h2>Enter your PIN</h2>
-      <p class="lock-sub">Telegram File Explorer is locked</p>
+      <h2 id="lockTitle">Enter your PIN</h2>
+      <p class="lock-sub" id="lockSub">Telegram File Explorer is locked</p>
       <div class="lock-dots" id="lockDots">
         <span></span><span></span><span></span><span></span>
       </div>
       <div class="lock-error" id="lockError" hidden></div>
       <div class="lock-pad" id="lockPad"></div>
+      <button class="lock-vault" id="lockVaultBtn" type="button" title="Choose the storage vault to open">
+        <span class="lock-vault-icon" data-icon="archive" aria-hidden="true"></span>
+        <span class="lock-vault-label">
+          <span class="lock-vault-kicker">Storage vault</span>
+          <span class="lock-vault-name" id="lockVaultName">—</span>
+        </span>
+        <span class="lock-vault-caret" data-icon="chevron" aria-hidden="true"></span>
+      </button>
+      <p class="lock-vault-note" id="lockVaultNote" hidden></p>
+      <div class="lock-vaults" id="lockVaults" hidden>
+        <div class="lock-vault-list" id="lockVaultList"></div>
+        <button class="lock-link" id="lockVaultBack" type="button">Back to PIN</button>
+      </div>
+      <button class="lock-link" id="lockForgot" type="button">Forgot PIN?</button>
+      <div class="lock-recover" id="lockRecover" hidden>
+        <h3>Reset PIN with Telegram</h3>
+        <p class="lock-sub">A 6-digit code is sent to Saved Messages in your Telegram account. It works on this PC only and expires in 10 minutes.</p>
+        <div class="lock-error" id="recoverError" hidden></div>
+        <button class="btn wide" id="recoverSend" type="button">Send code to Telegram</button>
+        <p class="lock-sub" id="recoverStatus" hidden></p>
+        <div class="lock-recover-form" id="recoverForm" hidden>
+          <label class="lock-field"><span>Recovery code</span>
+            <input id="recoverCode" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="6 digits">
+          </label>
+          <label class="lock-field"><span>New PIN</span>
+            <input id="recoverPin" type="password" inputmode="numeric" maxlength="4" autocomplete="new-password" placeholder="4 digits">
+          </label>
+          <label class="lock-field"><span>Repeat new PIN</span>
+            <input id="recoverPin2" type="password" inputmode="numeric" maxlength="4" autocomplete="new-password" placeholder="Repeat">
+          </label>
+          <button class="btn primary wide" id="recoverApply" type="button">Set new PIN</button>
+        </div>
+        <button class="lock-link" id="lockBack" type="button">Back to PIN</button>
+      </div>
     </div>
   </div>
 
@@ -324,6 +395,9 @@
   <input type="file" id="fileInput" multiple hidden>
   <input type="file" id="folderInput" webkitdirectory directory multiple hidden>
 
+  <script src="/static/vendor/videojs/video.min.js"></script>
+  <script src="/static/vendor/sprite-thumbnails/videojs-sprite-thumbnails.min.js"></script>
+  <script src="/static/vendor/viewerjs/viewer.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

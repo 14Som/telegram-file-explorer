@@ -3,7 +3,7 @@
 The index (folders, names, tags, notes, favorites), the thumbnails and the
 settings are packed into a ``tfe-data-*.zip`` document and posted into the
 vault channel — on every app close and after every completed sync, keeping
-the last few copies. On launch the newest archive is downloaded and
+the ten most recent copies. On launch the newest archive is downloaded and
 restored whenever it is newer than the local data, so the whole library
 comes back even if the PC's data folder (or the EXE) is gone.
 
@@ -34,7 +34,7 @@ MARKER = "#tfedata"
 PREFIX = "tfe-data-"
 SUFFIX = ".zip"
 STAMP_FORMAT = "%Y%m%d-%H%M%S"
-KEEP = 3
+KEEP = 10
 SCAN_LIMIT = 120
 
 
@@ -173,15 +173,21 @@ async def save(service: Any) -> Dict[str, Any]:
     return {"saved": True, "name": name, "thumbs": thumbs}
 
 
-async def _prune_old(client: Any, entity: Any) -> None:
+async def _snapshot_messages(client: Any, entity: Any) -> list:
+    """Every vault-data snapshot message in the channel."""
     found = []
+    # Telegram search returns only some of the older uploads, so walk the
+    # history to make sure every stale copy is found.
+    async for message in client.iter_messages(entity, limit=None, wait_time=0):
+        stamp = _snapshot_name(_doc_name(message) or "")
+        if stamp is not None:
+            found.append((stamp, message.id))
+    return found
+
+
+async def _prune_old(client: Any, entity: Any) -> None:
     try:
-        async for message in client.iter_messages(
-            entity, limit=SCAN_LIMIT, wait_time=0
-        ):
-            stamp = _snapshot_name(_doc_name(message) or "")
-            if stamp is not None:
-                found.append((stamp, message.id))
+        found = await _snapshot_messages(client, entity)
     except Exception:
         log.exception("Could not list old vault data snapshots")
         return
@@ -212,6 +218,18 @@ def _merge_settings(backup_path: Path) -> None:
         ):
             if not str(current.get(key) or "").strip() and backup.get(key):
                 merged[key] = str(backup[key]).strip()
+        # The vault list travels inside the snapshot so a new PC discovers the
+        # other storage channels again; an existing local list always wins.
+        try:
+            current_vaults = json.loads(str(current.get("vaults") or "[]"))
+        except ValueError:
+            current_vaults = []
+        try:
+            backup_vaults = json.loads(str(backup.get("vaults") or "[]"))
+        except ValueError:
+            backup_vaults = []
+        if not current_vaults and backup_vaults:
+            merged["vaults"] = json.dumps(backup_vaults)
         appconfig.save_settings(
             {key: value for key, value in merged.items() if key in appconfig.DEFAULTS}
         )
