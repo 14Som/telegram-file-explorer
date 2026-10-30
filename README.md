@@ -1,9 +1,9 @@
-# Telegram File Storage Bot
+# Telegram File Explorer
 
-Your files live in **Telegram's cloud** — this project keeps them organized. A local
-SQLite index holds names, folders, tags and notes, and a native Windows app lets you
-browse, preview, upload and download everything without a browser and without Bot API
-size limits.
+Turn a Telegram channel into a personal file library on Windows. Files live in
+**Telegram's cloud**; the app keeps them organized. A local SQLite index holds names,
+folders, tags and notes, and a native Windows app lets you browse, preview, upload and
+download everything without a browser and without Bot API size limits.
 
 Two parts, and either one is optional:
 
@@ -12,9 +12,12 @@ Two parts, and either one is optional:
 
 ## Quick start (Windows)
 
-1. Get `TelegramFileExplorer.exe` (it's in this repo) and put it in its own folder.
-2. Double-click it and sign in with the **QR code**: Telegram on your phone →
-   Settings → Devices → *Link Desktop Device*. The *Phone code* tab works too.
+1. Run `TelegramFileExplorerSetup.exe` — it installs the app (and the bot) for your
+   user, no admin rights needed. Already have `TelegramFileExplorer.exe`? Run that
+   instead; it works on its own.
+2. Double-click **Telegram File Explorer** and sign in with the **QR code**: Telegram
+   on your phone → Settings → Devices → *Link Desktop Device*. The *Phone code* tab
+   works too.
 3. Choose the private channel that holds your files — or create a new storage vault
    right in the app.
 4. Set a 4-digit PIN when asked — it locks the app on every launch. If you forget
@@ -29,13 +32,38 @@ listens on `127.0.0.1` only and never leaves your PC.
 If your library was saved to the vault channel before, it comes back automatically on
 launch — folders, names, tags, notes, favorites, thumbnails and settings.
 
+## Two PCs, one account
+
+The same Telegram account works on as many PCs as you like. Each PC signs in on its
+own, then sees the same vaults and files. Only the **storage bot** is limited to one
+PC at a time — Telegram allows a single running bot, so do not enable it twice.
+
+1. On the second PC run `TelegramFileExplorerSetup.exe` and untick **Run the storage
+   bot on this PC** (the first PC already runs it).
+2. Open the app and sign in with the same account, then choose your vault.
+3. Close and open the app once more — the library is restored from the vault at
+   startup, so the first launch only signs in.
+
+Avoid syncing from both PCs at the same moment: each close writes a backup of the
+library and the newest one wins.
+
+To move the bot to the other PC, run setup there again with **Run the storage bot on
+this PC** ticked (stop it on the first PC first). Setup never overwrites an existing
+`.env`.
+
 ## What the app does
 
 - **Browse** All files, Recent, Favorites and Hidden; restore files you removed
 - **Folders** — nested, with emoji icons, notes, and a collapsible sidebar tree;
   folder cards show a collage of up to four images from inside the folder, and
   Move opens the same hierarchy as a searchable tree to pick the destination
-- **Search & filters** — text, tag, type, size, date, notes-only; six sort orders
+- **Search & filters** — text, tag, type, size, date, notes-only; seven sort orders,
+  including by star
+- **Stars** — a Stash-style index of the performers in your library. Give each star a
+  portrait, details and aliases, then assign files from a file's **Stars** menu or
+  select several and use **Stars** in the bulk bar. The Stars page lists every file
+  they appear in; search matches names and aliases. *Look up online* fills the details
+  and portrait from IAFD (Wikipedia when IAFD has nothing)
 - **Previews** — video plays in a Video.js player that resumes where you stopped,
   steps to the next/previous video, shows seek-preview thumbnails on the progress
   bar and adjusts playback speed. Images open in Viewer.js with zoom, pan,
@@ -66,14 +94,16 @@ launch — folders, names, tags, notes, favorites, thumbnails and settings.
   vault name in the title bar to switch, scan for vaults, or create a new one: enter a
   name and the app makes the private channel in Telegram for you. The storage bot is
   invited and promoted to admin automatically. Each vault has its own files, folders
-  and library backup
+  and library backup. Use the pencil next to a vault to rename it — the Telegram channel
+  title changes too — or to pick an icon that tells the vaults apart.
 
 ## The bot (optional)
 
 The bot answers Telegram commands for the same archive. If `TelegramFileBot.exe` sits
-next to the Explorer, the app starts and supervises it automatically — the **Bot** chip
-in the title bar shows its status and toggles it on or off. The power button at the top
-left quits the app and stops the bot; closing the window does the same.
+next to the Explorer and a `.env` is configured, the app starts and supervises it
+automatically — the **Bot** chip in the title bar shows its status and toggles it on or
+off. Without a `.env` the chip says the bot is not set up on this PC. The power button
+at the top left quits the app and stops the bot; closing the window does the same.
 
 To set it up yourself:
 
@@ -133,6 +163,7 @@ uses. You can skip both — the app plays video and images without them.
 
 | Location | Contents |
 |---|---|
+| `%LOCALAPPDATA%\Programs\TelegramFileExplorer\` | installed app, the bot, and the `.env` on PCs that run the bot |
 | `%APPDATA%\TelegramFileExplorer\` | login session, `library.db`, settings, thumbnails, log |
 | `data\files.db` | the bot's index, plus `data\backups\` (latest 14, written daily) |
 | `.env` | your bot token — never share it, never commit it |
@@ -142,7 +173,8 @@ The Explorer never reads `BOT_TOKEN`, and your login session is never uploaded a
 ## Build from source
 
 Run `Build Explorer EXE.bat` — it installs PyInstaller into `.venv` and writes both
-`TelegramFileExplorer.exe` and `TelegramFileBot.exe` to the project folder. Desktop
+`TelegramFileExplorer.exe` and `TelegramFileBot.exe` to the project folder. Then
+`Build Installer.bat` wraps them into `TelegramFileExplorerSetup.exe`. Desktop
 dependencies: `pip install -r desktop\requirements.txt`.
 
 ## Limits & safety

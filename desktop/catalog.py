@@ -57,6 +57,32 @@ CREATE TABLE IF NOT EXISTS folders (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (chat_id, name)
 );
+CREATE TABLE IF NOT EXISTS performers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    aliases TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT '',
+    birthdate TEXT NOT NULL DEFAULT '',
+    height TEXT NOT NULL DEFAULT '',
+    hair TEXT NOT NULL DEFAULT '',
+    eyes TEXT NOT NULL DEFAULT '',
+    measurements TEXT NOT NULL DEFAULT '',
+    tattoos TEXT NOT NULL DEFAULT '',
+    piercings TEXT NOT NULL DEFAULT '',
+    favorite INTEGER NOT NULL DEFAULT 0,
+    image_version INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (chat_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_performers_name ON performers(name COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS item_performers (
+    item_id INTEGER NOT NULL,
+    performer_id INTEGER NOT NULL,
+    PRIMARY KEY (item_id, performer_id)
+);
+CREATE INDEX IF NOT EXISTS idx_item_performers_star ON item_performers(performer_id);
 """
 
 FOLDERS_DDL = """
@@ -88,7 +114,17 @@ SORT_COLUMNS = {
     "kind": "kind, name COLLATE NOCASE",
     "folder": "folder COLLATE NOCASE, name COLLATE NOCASE",
     "added": "id",
+    "star": (
+        "COALESCE((SELECT MIN(pf.name COLLATE NOCASE)"
+        " FROM item_performers ipf JOIN performers pf ON pf.id = ipf.performer_id"
+        " WHERE ipf.item_id = items.id), '~')"
+    ),
 }
+
+STAR_FIELDS = (
+    "name", "aliases", "note", "country", "birthdate", "height",
+    "hair", "eyes", "measurements", "tattoos", "piercings",
+)
 
 KIND_LABELS = {
     "image": "Image",
@@ -318,6 +354,7 @@ class Catalog:
         before: str = "",
         has_note: bool = False,
         recursive: bool = False,
+        performer: Optional[int] = None,
     ) -> Tuple[str, List[Any]]:
         if hidden_only:
             clauses: List[str] = ["items.hidden = 1"]
@@ -335,9 +372,13 @@ class Catalog:
             clauses.append(
                 "(items.name LIKE ? ESCAPE '\\' OR items.caption LIKE ? ESCAPE '\\'"
                 " OR items.tags LIKE ? ESCAPE '\\' OR items.folder LIKE ? ESCAPE '\\'"
-                " OR items.note LIKE ? ESCAPE '\\')"
+                " OR items.note LIKE ? ESCAPE '\\' OR EXISTS ("
+                "SELECT 1 FROM item_performers ipp"
+                " JOIN performers pf ON pf.id = ipp.performer_id"
+                " WHERE ipp.item_id = items.id AND (pf.name LIKE ? ESCAPE '\\'"
+                " OR pf.aliases LIKE ? ESCAPE '\\')))"
             )
-            params += [like, like, like, like, like]
+            params += [like] * 7
         if kind and kind != "all":
             clauses.append("items.kind = ?")
             params.append(kind)
@@ -376,6 +417,12 @@ class Catalog:
             params.append(before)
         if has_note:
             clauses.append("length(trim(items.note)) > 0")
+        if performer is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM item_performers ipf"
+                " WHERE ipf.item_id = items.id AND ipf.performer_id = ?)"
+            )
+            params.append(int(performer))
         return " AND ".join(clauses), params
 
     def list(
@@ -398,10 +445,11 @@ class Catalog:
         before: str = "",
         has_note: bool = False,
         recursive: bool = False,
+        performer: Optional[int] = None,
     ) -> Dict[str, Any]:
         where, params = self._where(
             q, kind, folder, tag, favorite, include_hidden, hidden_only, chat_id,
-            min_size, max_size, after, before, has_note, recursive,
+            min_size, max_size, after, before, has_note, recursive, performer,
         )
         column = SORT_COLUMNS.get(sort, SORT_COLUMNS["date"])
         order = "DESC" if str(direction).lower() == "desc" else "ASC"
@@ -840,6 +888,260 @@ class Catalog:
             "last_sync": last["added"] if last else None,
         }
 
+    STAR_SELECT = """
+        SELECT p.*,
+          (SELECT COUNT(*) FROM item_performers ip
+           JOIN items i ON i.id = ip.item_id
+           WHERE ip.performer_id = p.id AND i.hidden = 0) AS n,
+          (SELECT COUNT(*) FROM item_performers ip
+           JOIN items i ON i.id = ip.item_id
+           WHERE ip.performer_id = p.id AND i.hidden = 0
+             AND i.kind = 'video') AS videos,
+          (SELECT COUNT(*) FROM item_performers ip
+           JOIN items i ON i.id = ip.item_id
+           WHERE ip.performer_id = p.id AND i.hidden = 0
+             AND i.kind = 'image') AS images,
+          (SELECT COALESCE(SUM(i.size), 0) FROM item_performers ip
+           JOIN items i ON i.id = ip.item_id
+           WHERE ip.performer_id = p.id AND i.hidden = 0) AS total_size
+        FROM performers p
+    """
+
+    @staticmethod
+    def _star_dict(row: sqlite3.Row) -> Dict[str, Any]:
+        data = dict(row)
+        data["favorite"] = bool(data.get("favorite"))
+        return data
+
+    @staticmethod
+    def _star_values(fields: Dict[str, Any]) -> Dict[str, Any]:
+        cleaned: Dict[str, Any] = {}
+        for key in STAR_FIELDS:
+            if key not in fields:
+                continue
+            value = fields[key]
+            if key == "name":
+                name = clean_name(str(value or ""), "")
+                if not name:
+                    raise ValueError("A star needs a name.")
+                cleaned["name"] = name[:80]
+            elif key == "note":
+                cleaned["note"] = str(value or "").strip()[:4000]
+            else:
+                cleaned[key] = re.sub(
+                    r"[\r\n\t]+", " ", str(value or "")
+                ).strip()[:160]
+        return cleaned
+
+    def performers(
+        self, chat_id: Optional[int], q: str = "", limit: int = 500
+    ) -> List[Dict[str, Any]]:
+        clause = "p.chat_id = ?"
+        params: List[Any] = [int(chat_id or 0)]
+        text = str(q or "").strip()
+        if text:
+            like = f"%{_like(text)}%"
+            clause += (
+                " AND (p.name LIKE ? ESCAPE '\\' OR p.aliases LIKE ? ESCAPE '\\')"
+            )
+            params += [like, like]
+        with self.connect() as conn:
+            rows = conn.execute(
+                self.STAR_SELECT
+                + f" WHERE {clause} ORDER BY p.name COLLATE NOCASE LIMIT ?",
+                (*params, max(1, min(int(limit or 500), 2000))),
+            ).fetchall()
+        return [self._star_dict(row) for row in rows]
+
+    def performer(
+        self, star_id: int, chat_id: Optional[int]
+    ) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                self.STAR_SELECT + " WHERE p.id = ? AND p.chat_id = ?",
+                (int(star_id), int(chat_id or 0)),
+            ).fetchone()
+        return self._star_dict(row) if row else None
+
+    def performer_count(self, chat_id: Optional[int]) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM performers WHERE chat_id = ?",
+                (int(chat_id or 0),),
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def create_performer(
+        self, chat_id: Optional[int], **fields: Any
+    ) -> Dict[str, Any]:
+        values = self._star_values(fields)
+        if "name" not in values:
+            raise ValueError("A star needs a name.")
+        columns = ", ".join(["chat_id", *values])
+        marks = ", ".join("?" * (len(values) + 1))
+        with self.connect() as conn:
+            try:
+                cur = conn.execute(
+                    f"INSERT INTO performers ({columns}) VALUES ({marks})",
+                    (int(chat_id or 0), *values.values()),
+                )
+            except sqlite3.IntegrityError:
+                raise ValueError("A star with that name already exists.")
+            star_id = int(cur.lastrowid)
+        return self.performer(star_id, chat_id) or {}
+
+    def update_performer(
+        self, star_id: int, chat_id: Optional[int], **fields: Any
+    ) -> Optional[Dict[str, Any]]:
+        values = self._star_values(fields)
+        if fields.get("favorite") is not None:
+            values["favorite"] = 1 if fields["favorite"] else 0
+        if not values:
+            return self.performer(star_id, chat_id)
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        with self.connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM performers WHERE id = ? AND chat_id = ?",
+                (int(star_id), int(chat_id or 0)),
+            ).fetchone()
+            if exists is None:
+                return None
+            try:
+                conn.execute(
+                    f"UPDATE performers SET {assignments}"
+                    " WHERE id = ? AND chat_id = ?",
+                    (*values.values(), int(star_id), int(chat_id or 0)),
+                )
+            except sqlite3.IntegrityError:
+                raise ValueError("A star with that name already exists.")
+        return self.performer(star_id, chat_id)
+
+    def set_performer_image(
+        self, star_id: int, chat_id: Optional[int], version: int
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE performers SET image_version = ?"
+                " WHERE id = ? AND chat_id = ?",
+                (int(version), int(star_id), int(chat_id or 0)),
+            )
+
+    def delete_performer(
+        self, star_id: int, chat_id: Optional[int]
+    ) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM performers WHERE id = ? AND chat_id = ?",
+                (int(star_id), int(chat_id or 0)),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                "DELETE FROM item_performers WHERE performer_id = ?",
+                (int(star_id),),
+            )
+            conn.execute(
+                "DELETE FROM performers WHERE id = ? AND chat_id = ?",
+                (int(star_id), int(chat_id or 0)),
+            )
+        return True
+
+    def item_performers(self, item_id: int) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT p.id, p.name FROM item_performers ip"
+                " JOIN performers p ON p.id = ip.performer_id"
+                " WHERE ip.item_id = ? ORDER BY p.name COLLATE NOCASE",
+                (int(item_id),),
+            ).fetchall()
+        return [{"id": int(row["id"]), "name": str(row["name"])} for row in rows]
+
+    def performers_for_items(
+        self, item_ids: List[int]
+    ) -> Dict[int, List[Dict[str, Any]]]:
+        found: Dict[int, List[Dict[str, Any]]] = {}
+        wanted = sorted({int(value) for value in item_ids})
+        if not wanted:
+            return found
+        with self.connect() as conn:
+            for start in range(0, len(wanted), 400):
+                chunk = wanted[start:start + 400]
+                marks = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"SELECT ip.item_id, p.id, p.name FROM item_performers ip"
+                    f" JOIN performers p ON p.id = ip.performer_id"
+                    f" WHERE ip.item_id IN ({marks})"
+                    " ORDER BY p.name COLLATE NOCASE",
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    found.setdefault(int(row["item_id"]), []).append(
+                        {"id": int(row["id"]), "name": str(row["name"])}
+                    )
+        return found
+
+    def set_item_performers(
+        self, item_id: int, star_ids: List[int], chat_id: Optional[int]
+    ) -> List[Dict[str, Any]]:
+        wanted = sorted({int(value) for value in star_ids})
+        with self.connect() as conn:
+            item = conn.execute(
+                "SELECT chat_id FROM items WHERE id = ?", (int(item_id),)
+            ).fetchone()
+            if item is None:
+                raise ValueError("File not found.")
+            if chat_id is not None and int(item["chat_id"]) != int(chat_id):
+                raise ValueError("File not found in this vault.")
+            if wanted:
+                marks = ",".join("?" * len(wanted))
+                valid = conn.execute(
+                    f"SELECT id FROM performers WHERE chat_id = ?"
+                    f" AND id IN ({marks})",
+                    (int(chat_id or 0), *wanted),
+                ).fetchall()
+                if len(valid) != len(wanted):
+                    raise ValueError("Star not found in this vault.")
+            conn.execute(
+                "DELETE FROM item_performers WHERE item_id = ?", (int(item_id),)
+            )
+            conn.executemany(
+                "INSERT OR IGNORE INTO item_performers (item_id, performer_id)"
+                " VALUES (?, ?)",
+                [(int(item_id), star_id) for star_id in wanted],
+            )
+        return self.item_performers(item_id)
+
+    def add_item_performers(
+        self, item_ids: List[int], star_ids: List[int], chat_id: Optional[int]
+    ) -> int:
+        items = sorted({int(value) for value in item_ids})
+        stars = sorted({int(value) for value in star_ids})
+        if not items or not stars:
+            return 0
+        with self.connect() as conn:
+            imarks = ",".join("?" * len(items))
+            smarks = ",".join("?" * len(stars))
+            owned = conn.execute(
+                f"SELECT COUNT(*) AS n FROM items WHERE chat_id = ?"
+                f" AND id IN ({imarks})",
+                (int(chat_id or 0), *items),
+            ).fetchone()
+            if int(owned["n"]) != len(items):
+                raise ValueError("Some files are not in this vault.")
+            valid = conn.execute(
+                f"SELECT COUNT(*) AS n FROM performers WHERE chat_id = ?"
+                f" AND id IN ({smarks})",
+                (int(chat_id or 0), *stars),
+            ).fetchone()
+            if int(valid["n"]) != len(stars):
+                raise ValueError("Star not found in this vault.")
+            conn.executemany(
+                "INSERT OR IGNORE INTO item_performers (item_id, performer_id)"
+                " VALUES (?, ?)",
+                [(item_id, star_id) for item_id in items for star_id in stars],
+            )
+        return len(items) * len(stars)
+
     def update(self, item_id: int, **fields: Any) -> Optional[Dict[str, Any]]:
         allowed = {
             "name", "folder", "tags", "favorite", "hidden", "caption", "note",
@@ -918,12 +1220,19 @@ class Catalog:
             stale = [int(row["id"]) for row in rows[max(0, int(keep)):]]
             if stale:
                 conn.executemany(
+                    "DELETE FROM item_performers WHERE item_id = ?",
+                    [(item_id,) for item_id in stale],
+                )
+                conn.executemany(
                     "DELETE FROM items WHERE id = ?", [(item_id,) for item_id in stale]
                 )
             return len(stale)
 
     def delete(self, item_id: int) -> bool:
         with self.connect() as conn:
+            conn.execute(
+                "DELETE FROM item_performers WHERE item_id = ?", (item_id,)
+            )
             cur = conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
             return cur.rowcount > 0
 

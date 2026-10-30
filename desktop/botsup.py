@@ -27,6 +27,7 @@ DATA_DIR = appconfig.PROJECT_DIR / "data"
 PID_PATH = DATA_DIR / "bot.pid"
 STOP_PATH = DATA_DIR / "bot.stop"
 BOT_LOG_PATH = DATA_DIR / "bot.log"
+ENV_PATH = appconfig.PROJECT_DIR / ".env"
 CHECK_INTERVAL = 8.0
 SYNCHRONIZE = 0x00100000
 
@@ -63,6 +64,11 @@ def bot_available() -> bool:
     return bot_command() is not None
 
 
+def bot_configured() -> bool:
+    """The bot has its own .env next to the app; its contents stay private."""
+    return ENV_PATH.is_file()
+
+
 def mutex_exists() -> bool:
     kernel32 = _k32()
     if kernel32 is None:
@@ -87,6 +93,7 @@ def status() -> Dict[str, Any]:
         "running": running,
         "pid": _read_pid() if running else None,
         "available": bot_available(),
+        "configured": bot_configured(),
     }
 
 
@@ -98,6 +105,14 @@ def spawn() -> Dict[str, Any]:
         return {
             **status(),
             "error": "TelegramFileBot.exe was not found next to the Explorer.",
+        }
+    if not bot_configured():
+        return {
+            **status(),
+            "error": (
+                "The bot is not set up on this PC. Run the installer with the bot "
+                "option, or add a .env file next to the app."
+            ),
         }
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -184,7 +199,14 @@ class Supervisor:
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self.enabled = appconfig.load_settings().get("run_bot", "1") == "1"
+        stored = str(appconfig.load_settings().get("run_bot") or "").strip()
+        configured = bot_configured()
+        if stored in ("0", "1"):
+            # A copied settings file must not start a poller where there is no .env.
+            self.enabled = stored == "1" and configured
+        else:
+            # Fresh install: run the bot only where it has been configured.
+            self.enabled = configured
 
     def start_watching(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -209,9 +231,12 @@ class Supervisor:
         return {**status(), "enabled": self.enabled}
 
     def turn_on(self) -> Dict[str, Any]:
+        result = spawn()
+        if result.get("error"):
+            return {**result, "enabled": self.enabled}
         self.enabled = True
         self._save_enabled(True)
-        return {**spawn(), "enabled": True}
+        return {**result, "enabled": True}
 
     def turn_off(self) -> Dict[str, Any]:
         self.enabled = False

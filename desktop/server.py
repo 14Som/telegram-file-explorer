@@ -33,6 +33,7 @@ from . import (
     applock,
     botsup,
     mediatools,
+    starlookup,
     storyboard,
     streamcache,
     thumbpick,
@@ -115,6 +116,16 @@ class VaultBotBody(BaseModel):
     id: str = ""
 
 
+class VaultRenameBody(BaseModel):
+    id: str
+    title: str
+
+
+class VaultIconBody(BaseModel):
+    id: str
+    icon: str
+
+
 class PhoneBody(BaseModel):
     phone: str
 
@@ -180,6 +191,37 @@ class BatchFavoriteBody(BatchIdsBody):
 
 class BatchMoveBody(BatchIdsBody):
     folder: str
+
+
+class StarBody(BaseModel):
+    name: str = ""
+    aliases: Optional[str] = None
+    note: Optional[str] = None
+    country: Optional[str] = None
+    birthdate: Optional[str] = None
+    height: Optional[str] = None
+    hair: Optional[str] = None
+    eyes: Optional[str] = None
+    measurements: Optional[str] = None
+    tattoos: Optional[str] = None
+    piercings: Optional[str] = None
+    favorite: Optional[bool] = None
+
+
+class StarIdsBody(BaseModel):
+    star_ids: List[int] = []
+
+
+class BatchStarsBody(BatchIdsBody):
+    star_ids: List[int] = []
+
+
+class StarImageBody(BaseModel):
+    item_id: int
+
+
+class StarLookupBody(BaseModel):
+    overwrite: bool = False
 
 
 class FolderBody(BaseModel):
@@ -290,6 +332,77 @@ async def _scoped_item(state: Any, item_id: int) -> Dict[str, Any]:
     if item is None or chat_id is None or int(item.get("chat_id")) != int(chat_id):
         raise HTTPException(status_code=404, detail="File not found in this channel.")
     return item
+
+
+def _star_image_path(star_id: int) -> Path:
+    return appconfig.THUMB_DIR / "stars" / f"{int(star_id)}.img"
+
+
+def _public_star(star: Dict[str, Any]) -> Dict[str, Any]:
+    data = dict(star)
+    version = int(data.get("image_version") or 0)
+    data["image_url"] = (
+        f"/api/stars/{data['id']}/image?v={version}" if version else None
+    )
+    return data
+
+
+async def _scoped_star(state: Any, star_id: int) -> Dict[str, Any]:
+    star = await run_in_threadpool(state.catalog.performer, star_id, _chat_id(state))
+    if star is None:
+        raise HTTPException(status_code=404, detail="Star not found in this vault.")
+    return star
+
+
+async def _attach_stars(state: Any, items: List[Dict[str, Any]]) -> None:
+    if not items:
+        return
+    found = await run_in_threadpool(
+        state.catalog.performers_for_items, [int(item["id"]) for item in items]
+    )
+    for item in items:
+        item["stars"] = found.get(int(item["id"]), [])
+
+
+def _looks_like_image(data: bytes) -> bool:
+    return bool(
+        data.startswith(b"\xff\xd8\xff")
+        or data.startswith(b"\x89PNG\r\n\x1a\n")
+        or data.startswith(b"GIF8")
+        or (
+            len(data) > 12
+            and data[:4] == b"RIFF"
+            and data[8:12] == b"WEBP"
+        )
+    )
+
+
+def _store_star_image(star_id: int, data: bytes) -> int:
+    path = _star_image_path(star_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+    return int(time.time() * 1000)
+
+
+async def _portrait_bytes(
+    state: Any, item: Dict[str, Any]
+) -> Optional[Tuple[bytes, str]]:
+    item_id = int(item["id"])
+    custom = thumbpick.custom_path(item_id)
+    if custom.is_file():
+        return await run_in_threadpool(custom.read_bytes), "image/jpeg"
+    cache = appconfig.THUMB_DIR / f"{item_id}.thumb"
+    if cache.is_file():
+        data = await run_in_threadpool(cache.read_bytes)
+        return data, _sniff_image(data)
+    if not item.get("has_thumb"):
+        return None
+    try:
+        return await state.service.thumbnail(item)
+    except TGError:
+        return None
 
 
 def _part_groups(state: Any) -> Dict[str, Dict[str, Any]]:
@@ -485,6 +598,8 @@ async def guard(request: Request, call_next):
     content_type = response.headers.get("content-type", "")
     if content_type.startswith("text/html"):
         response.headers.setdefault("Content-Security-Policy", CSP)
+        response.headers.setdefault("Cache-Control", "no-store")
+    elif request.url.path.startswith("/static/"):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
 
@@ -709,6 +824,7 @@ async def nav(request: Request):
         "tags": state.catalog.tags(chat_id)[:120],
         "kinds": state.catalog.kinds(chat_id),
         "stats": state.catalog.stats(chat_id),
+        "stars": state.catalog.performer_count(chat_id),
         "vault": state.service.status().get("vault"),
     }
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
@@ -1146,6 +1262,18 @@ async def add_vault_bot(body: VaultBotBody, request: Request):
     return await state.service.add_helper_bot(body.id.strip() or None)
 
 
+@app.post("/api/vaults/rename")
+async def rename_vault(body: VaultRenameBody, request: Request):
+    state = _state(request)
+    return await state.service.rename_vault(body.id.strip(), body.title)
+
+
+@app.post("/api/vaults/icon")
+async def set_vault_icon(body: VaultIconBody, request: Request):
+    state = _state(request)
+    return state.service.set_vault_icon(body.id.strip(), body.icon)
+
+
 @app.get("/api/channels")
 async def channels(request: Request, q: str = Query("", max_length=100)):
     state = _state(request)
@@ -1277,6 +1405,7 @@ async def items(
     hidden: bool = False,
     recursive: bool = False,
     note: bool = False,
+    star: Optional[int] = Query(None, ge=1),
     min_size: Optional[int] = Query(None, ge=0),
     max_size: Optional[int] = Query(None, ge=0),
     after: str = Query("", max_length=10),
@@ -1311,10 +1440,12 @@ async def items(
         before=before,
         has_note=note,
         recursive=recursive,
+        performer=star,
     )
     vault = _vault(state.service.status())
     result["items"] = [public_item(item, vault) for item in result["items"]]
     _attach_part_info(state, result["items"])
+    await _attach_stars(state, result["items"])
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 
@@ -1324,6 +1455,7 @@ async def get_item(item_id: int, request: Request):
     item = await _scoped_item(state, item_id)
     public = public_item(item, _vault(state.service.status()))
     _attach_part_info(state, [public])
+    await _attach_stars(state, [public])
     return public
 
 
@@ -1379,10 +1511,9 @@ async def patch_item(item_id: int, body: ItemPatch, request: Request):
         item = await run_in_threadpool(state.catalog.set_note, item_id, body.note)
     if item is None:
         raise HTTPException(status_code=404, detail="File not found.")
-    return {
-        "item": public_item(item, _vault(state.service.status())),
-        "warning": warning,
-    }
+    public = public_item(item, _vault(state.service.status()))
+    await _attach_stars(state, [public])
+    return {"item": public, "warning": warning}
 
 
 @app.post("/api/items/{item_id}/position")
@@ -1401,6 +1532,228 @@ async def save_position(item_id: int, body: PlaybackBody, request: Request):
         played_at=datetime.now().isoformat(timespec="seconds") if position else "",
     )
     return {"saved": True, "play_pos": position}
+
+
+# ---------------------------------------------------------------------- stars
+@app.get("/api/stars")
+async def stars(
+    request: Request,
+    q: str = Query("", max_length=120),
+    item: Optional[int] = Query(None, ge=1),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    state = _state(request)
+    found = await run_in_threadpool(
+        state.catalog.performers, _chat_id(state), q, limit
+    )
+    payload = [_public_star(star) for star in found]
+    if item is not None:
+        scoped = await _scoped_item(state, item)
+        assigned = {
+            entry["id"]
+            for entry in await run_in_threadpool(
+                state.catalog.item_performers, scoped["id"]
+            )
+        }
+        for star in payload:
+            star["assigned"] = int(star["id"]) in assigned
+    return JSONResponse(
+        {"stars": payload, "total": len(payload)},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/api/stars")
+async def create_star(body: StarBody, request: Request):
+    state = _state(request)
+    values = body.model_dump(exclude_unset=True)
+    if not str(values.get("name") or "").strip():
+        raise TGError("A star needs a name.")
+    try:
+        star = await run_in_threadpool(
+            state.catalog.create_performer, _chat_id(state), **values
+        )
+    except ValueError as exc:
+        raise TGError(str(exc))
+    return _public_star(star)
+
+
+@app.patch("/api/stars/{star_id}")
+async def update_star(star_id: int, body: StarBody, request: Request):
+    state = _state(request)
+    await _scoped_star(state, star_id)
+    values = body.model_dump(exclude_unset=True)
+    if "name" in values and not str(values["name"] or "").strip():
+        raise TGError("A star needs a name.")
+    try:
+        star = await run_in_threadpool(
+            state.catalog.update_performer,
+            star_id,
+            _chat_id(state),
+            **values,
+        )
+    except ValueError as exc:
+        raise TGError(str(exc))
+    if star is None:
+        raise HTTPException(status_code=404, detail="Star not found in this vault.")
+    return _public_star(star)
+
+
+@app.delete("/api/stars/{star_id}")
+async def delete_star(star_id: int, request: Request):
+    state = _state(request)
+    await _scoped_star(state, star_id)
+    removed = await run_in_threadpool(
+        state.catalog.delete_performer, star_id, _chat_id(state)
+    )
+    if not removed:
+        raise HTTPException(status_code=404, detail="Star not found in this vault.")
+    await run_in_threadpool(
+        _star_image_path(star_id).unlink, missing_ok=True
+    )
+    return {"deleted": True, "star_id": star_id}
+
+
+@app.get("/api/stars/{star_id}/image")
+async def star_image(star_id: int, request: Request):
+    state = _state(request)
+    await _scoped_star(state, star_id)
+    path = _star_image_path(star_id)
+    if not await run_in_threadpool(path.is_file):
+        raise HTTPException(status_code=404, detail="No star image yet.")
+    data = await run_in_threadpool(path.read_bytes)
+    return Response(
+        content=data,
+        media_type=_sniff_image(data),
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+@app.get("/api/stars/{star_id}")
+async def star_detail(star_id: int, request: Request):
+    state = _state(request)
+    return _public_star(await _scoped_star(state, star_id))
+
+
+@app.post("/api/stars/{star_id}/image/from-item")
+async def star_image_from_item(
+    star_id: int, body: StarImageBody, request: Request
+):
+    state = _state(request)
+    await _scoped_star(state, star_id)
+    item = await _scoped_item(state, body.item_id)
+    result = await _portrait_bytes(state, item)
+    if not result:
+        raise TGError("That file has no thumbnail to use yet.")
+    data, _ = result
+    version = await run_in_threadpool(_store_star_image, star_id, data)
+    await run_in_threadpool(
+        state.catalog.set_performer_image, star_id, _chat_id(state), version
+    )
+    return _public_star(await _scoped_star(state, star_id))
+
+
+@app.post("/api/stars/{star_id}/image")
+async def star_image_upload(
+    star_id: int, request: Request, file: UploadFile = File(...)
+):
+    state = _state(request)
+    await _scoped_star(state, star_id)
+    limit = 12 * 1024 * 1024
+    data = await file.read(limit + 1)
+    await file.close()
+    if not data:
+        raise TGError("The image is empty.")
+    if len(data) > limit:
+        raise TGError("Choose an image under 12 MB.")
+    if not _looks_like_image(data):
+        raise TGError("That file is not a JPEG, PNG, GIF or WebP image.")
+    version = await run_in_threadpool(_store_star_image, star_id, data)
+    await run_in_threadpool(
+        state.catalog.set_performer_image, star_id, _chat_id(state), version
+    )
+    return _public_star(await _scoped_star(state, star_id))
+
+
+@app.post("/api/stars/{star_id}/lookup")
+async def star_lookup(
+    star_id: int, body: StarLookupBody, request: Request
+):
+    state = _state(request)
+    star = await _scoped_star(state, star_id)
+    try:
+        result = await run_in_threadpool(
+            starlookup.lookup,
+            str(star.get("name") or ""),
+            str(star.get("aliases") or ""),
+        )
+    except starlookup.LookupError as exc:
+        raise TGError(str(exc))
+    fields = result.get("fields") or {}
+    updates = starlookup.apply_fields(star, fields, body.overwrite)
+    if updates:
+        star = await run_in_threadpool(
+            state.catalog.update_performer,
+            star_id,
+            _chat_id(state),
+            **updates,
+        )
+    image_saved = False
+    image = result.get("image_bytes")
+    if image and (body.overwrite or not int(star.get("image_version") or 0)):
+        version = await run_in_threadpool(_store_star_image, star_id, image)
+        await run_in_threadpool(
+            state.catalog.set_performer_image, star_id, _chat_id(state), version
+        )
+        star = await _scoped_star(state, star_id)
+        image_saved = True
+    return {
+        "star": _public_star(star),
+        "source": result.get("source"),
+        "source_url": result.get("source_url"),
+        "title": result.get("title"),
+        "applied": sorted(updates),
+        "image": image_saved,
+    }
+
+
+@app.put("/api/items/{item_id}/stars")
+async def set_item_stars(
+    item_id: int, body: StarIdsBody, request: Request
+):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    try:
+        assigned = await run_in_threadpool(
+            state.catalog.set_item_performers,
+            item["id"],
+            body.star_ids,
+            _chat_id(state),
+        )
+    except ValueError as exc:
+        raise TGError(str(exc))
+    return {"item_id": item["id"], "stars": assigned}
+
+
+@app.post("/api/items/stars")
+async def add_item_stars(body: BatchStarsBody, request: Request):
+    state = _state(request)
+    ids = list(dict.fromkeys(int(value) for value in body.item_ids))[:500]
+    if not ids:
+        raise TGError("Choose at least one file.")
+    star_ids = list(dict.fromkeys(int(value) for value in body.star_ids))
+    if not star_ids:
+        raise TGError("Choose at least one star.")
+    try:
+        links = await run_in_threadpool(
+            state.catalog.add_item_performers,
+            ids,
+            star_ids,
+            _chat_id(state),
+        )
+    except ValueError as exc:
+        raise TGError(str(exc))
+    return {"files": len(ids), "stars": len(star_ids), "links": links}
 
 
 @app.get("/api/tools")
@@ -1520,7 +1873,9 @@ async def thumb_picker_select(item_id: int, body: ThumbPickBody, request: Reques
         has_thumb=1,
         thumb_version=int(time.time()),
     )
-    return public_item(updated or item, _vault(state.service.status()))
+    public = public_item(updated or item, _vault(state.service.status()))
+    await _attach_stars(state, [public])
+    return public
 
 
 @app.delete("/api/items/{item_id}")

@@ -8,6 +8,7 @@ const SVG = {
   home: '<path d="m3 10 9-7 9 7"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-6h6v6"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9z"/>',
+  user: '<circle cx="12" cy="8" r="3.6"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>',
   starFilled: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9z" fill="currentColor"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   folderOpen: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1H3z"/><path d="M3 10h18l-2 9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
@@ -210,7 +211,7 @@ function isEditableTarget(target) {
 /* ------------------------------------------------------------------ state */
 const PREFS_COOKIE = "tfe_prefs";
 const THEME_VALUES = ["system", "light", "dark", "mica", "acrylic"];
-const SORT_VALUES = ["date", "name", "size", "kind", "folder", "added"];
+const SORT_VALUES = ["date", "name", "size", "kind", "folder", "added", "star"];
 
 function loadPrefs() {
   try {
@@ -266,7 +267,12 @@ const S = {
   vaultMenuOpen: false,
   vaultBusy: false,
   vaultRefreshBusy: false,
-  nav: { folders: [], tags: [], kinds: [], stats: { count: 0, size: 0, favorites: 0, last_sync: null } },
+  nav: { folders: [], tags: [], kinds: [], stars: 0, stats: { count: 0, size: 0, favorites: 0, last_sync: null } },
+  stars: [],
+  starTotal: 0,
+  starId: null,
+  starInfo: null,
+  starsLoading: false,
   items: [],
   total: 0,
   totalSize: 0,
@@ -300,6 +306,7 @@ const S = {
   seenTransfers: new Set(),
   refreshTimer: null,
   previewToken: 0,
+  previewCollapsed: SAVED_PREFS.preview === "hidden",
   channelsTimer: null
 };
 
@@ -382,6 +389,7 @@ function updateFilterBadge() {
 }
 function visibleSubfolders() {
   if (isFiltering()) return [];
+  if (S.navMode === "stars") return [];
   if (S.folder) {
     const parent = S.folder.toLowerCase();
     return (S.nav.folders || []).filter((entry) => (entry.parent || "").toLowerCase() === parent);
@@ -456,7 +464,6 @@ function init() {
   setIcon($("moreBtn"), "more");
   setIcon($("lockBtn"), "lock");
   setIcon($("quitBtn"), "power");
-  setIcon($("vaultChipIcon"), "archive");
   setIcon($("vaultChipCaret"), "chevron");
   setIcon($("vaultRefreshBtn"), "refresh");
   setIcon($("vaultNewIcon"), "plus");
@@ -466,6 +473,7 @@ function init() {
   setIcon($("backBtn"), "back");
   setIcon($("forwardBtn"), "forward");
   setIcon($("upBtn"), "up");
+  applyPreviewState();
   document.querySelector(".search-icon").innerHTML = svgRaw("search");
   $("sortDirBtn").innerHTML = svgRaw(S.dir === "asc" ? "sortAsc" : "sortDesc");
   $("uploadsClose").innerHTML = svgRaw("close");
@@ -610,6 +618,7 @@ function updateChrome() {
   if (st && Array.isArray(st.vaults)) S.vaults = st.vaults;
   if (st && st.vault) {
     $("vaultWrap").hidden = false;
+    $("vaultChipIcon").textContent = vaultIcon(st.vault);
     $("vaultChipText").textContent = st.vault.title || String(st.vault.id);
     chip.title = `Storage vault: ${st.vault.title || st.vault.id} — click to switch`;
     chip.disabled = Boolean(S.vaultBusy) || !st.authorized;
@@ -655,6 +664,9 @@ function updateBotChip(st) {
     chipEl.title = "Storage bot running"
       + (bot.pid ? ` (process ${bot.pid})` : "")
       + ". It answers your commands in Telegram. Click to stop it.";
+  } else if (bot.configured === false) {
+    text.textContent = "Bot off";
+    chipEl.title = "The bot is not set up on this PC. Run the installer with the bot option to enable it.";
   } else if (bot.enabled) {
     dot.classList.add("warn");
     text.textContent = "Bot starting…";
@@ -678,8 +690,12 @@ async function toggleBot() {
     const result = await api(stopping ? "/api/bot/stop" : "/api/bot/start", { method: "POST" });
     S.status = { ...S.status, bot: result.bot };
     updateChrome();
-    toast(stopping ? "Storage bot stopped. Telegram commands are paused."
-      : "Storage bot is running. Telegram commands are live.", "success");
+    if (result.bot && result.bot.error) {
+      toast(result.bot.error, "error", 8000);
+    } else {
+      toast(stopping ? "Storage bot stopped. Telegram commands are paused."
+        : "Storage bot is running. Telegram commands are live.", "success");
+    }
   } catch (error) {
     toast(error.message, "error");
     updateChrome();
@@ -689,6 +705,15 @@ async function toggleBot() {
 }
 
 /* ---------------------------------------------------------------- vaults */
+const VAULT_ICONS = [
+  "🗄️", "📦", "🗃️", "💾", "🎞️",
+  "📚", "🔐", "🚀", "🌙", "🔥",
+  "💎", "🧊", "🌊", "🍀", "⚡",
+  "🎬", "🖼️", "📀", "🧰", "🧿"
+];
+function vaultIcon(vault) {
+  return (vault && vault.icon) || "🗄️";
+}
 function vaultBusyReason() {
   const st = S.status || {};
   if (st.sync && st.sync.running) {
@@ -741,7 +766,7 @@ function renderVaultMenu() {
       disabled: active || Boolean(busy) || S.vaultBusy,
       title: active ? "This vault is open" : (busy || `Switch to ${vault.title || vault.id}`)
     },
-      h("span", { class: "vault-item-mark", html: svgRaw(vault.username ? "link" : "lock") }),
+      h("span", { class: "vault-item-mark", text: vaultIcon(vault) }),
       h("span", { class: "vault-item-text" },
         h("span", { class: "vault-item-title", text: vault.title || String(vault.id) }),
         h("span", { class: "vault-item-sub", text: vault.username ? `@${vault.username}` : "Private channel" })
@@ -749,7 +774,18 @@ function renderVaultMenu() {
       active ? h("span", { class: "vault-item-check", html: svgRaw("check") }) : null
     );
     row.addEventListener("click", () => switchVault(vault));
-    rows.push(row);
+    const edit = h("button", {
+      class: "vault-edit",
+      type: "button",
+      title: `Rename ${vault.title || vault.id} or change its icon`,
+      disabled: S.vaultBusy || !(S.status && S.status.authorized),
+      html: svgRaw("edit")
+    });
+    edit.addEventListener("click", (event) => {
+      event.stopPropagation();
+      promptEditVault(vault);
+    });
+    rows.push(h("div", { class: "vault-row" }, row, edit));
   }
   if (!rows.length) {
     rows.push(h("div", { class: "vault-empty", text: "No vaults found yet." }));
@@ -804,6 +840,10 @@ function resetVaultView() {
   S.q = "";
   S.favorite = false;
   S.hiddenOnly = false;
+  S.starId = null;
+  S.starInfo = null;
+  S.stars = [];
+  S.starTotal = 0;
   S.filters = newFilterState();
   S.items = [];
   S.total = 0;
@@ -986,6 +1026,123 @@ function promptNewVault() {
   input.focus();
 }
 
+function promptEditVault(vault) {
+  closeVaultMenu();
+  const currentTitle = vault.title || String(vault.id);
+  const input = inputEl({
+    type: "text",
+    value: currentTitle,
+    maxlength: "128",
+    autocomplete: "off"
+  });
+  let chosen = vaultIcon(vault);
+  const buttons = [];
+  const select = (value) => {
+    chosen = value;
+    for (const button of buttons) {
+      button.classList.toggle("selected", button.dataset.icon === value);
+    }
+  };
+  const grid = h("div", { class: "vault-icon-grid" });
+  for (const value of VAULT_ICONS) {
+    const button = h("button", {
+      class: "vault-icon-option",
+      type: "button",
+      title: `Use ${value}`,
+      "data-icon": value,
+      text: value
+    });
+    button.addEventListener("click", () => select(value));
+    buttons.push(button);
+    grid.append(button);
+  }
+  select(chosen);
+  const shuffle = h("button", { class: "btn vault-icon-shuffle", type: "button", text: "Shuffle" });
+  shuffle.addEventListener("click", () => {
+    const options = VAULT_ICONS.filter((value) => value !== chosen);
+    select(options[Math.floor(Math.random() * options.length)]);
+  });
+  const content = h("div", {},
+    field(
+      "Vault name",
+      input,
+      "The Telegram channel title changes too, so the name is the same everywhere."
+    ),
+    h("div", { class: "field" },
+      h("label", { text: "Icon" }),
+      h("div", { class: "vault-icon-field" }, grid, shuffle),
+      h("div", { class: "hint", text: "Pick an icon that tells this vault apart in the switcher. Shuffle picks a random one." })
+    )
+  );
+  openModal({
+    title: "Edit vault",
+    subtitle: currentTitle,
+    content,
+    wide: true,
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Save",
+        class: "primary",
+        onClick: async () => {
+          const name = input.value.trim();
+          if (!name) {
+            toast("A vault needs a name.", "error");
+            input.focus();
+            return;
+          }
+          const renamed = name !== currentTitle;
+          const recoloured = chosen !== vaultIcon(vault);
+          if (!renamed && !recoloured) {
+            closeModal();
+            return;
+          }
+          try {
+            let data = null;
+            if (renamed) {
+              data = await api("/api/vaults/rename", {
+                method: "POST",
+                body: { id: String(vault.id), title: name }
+              });
+            }
+            if (recoloured) {
+              data = await api("/api/vaults/icon", {
+                method: "POST",
+                body: { id: String(vault.id), icon: chosen }
+              });
+            }
+            closeModal();
+            applyVaultUpdate(data);
+            toast(renamed ? `Renamed to “${name}”.` : "Vault icon updated.", "success");
+          } catch (error) {
+            toast(error.message, "error", 7000);
+            input.focus();
+          }
+        }
+      }
+    ]
+  });
+  input.focus();
+  input.setSelectionRange(0, input.value.length);
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const save = $("modalActions").querySelector(".primary");
+    if (save && !save.disabled) save.click();
+  });
+}
+
+function applyVaultUpdate(data) {
+  if (!data) return;
+  if (Array.isArray(data.vaults)) S.vaults = data.vaults;
+  if (data.vault) {
+    S.status = { ...S.status, vault: data.vault, vaults: S.vaults };
+  } else if (Array.isArray(data.vaults)) {
+    S.status = { ...S.status, vaults: S.vaults };
+  }
+  updateChrome();
+}
+
 /* ----------------------------------------------------------------- app lock */
 let pinBuffer = "";
 let recoveryTimer = null;
@@ -1049,11 +1206,16 @@ function lockVaultEntries() {
   const st = S.status || {};
   const entries = (st.vaults || []).map((vault) => ({
     id: String(vault.id),
-    title: vault.title || String(vault.id)
+    title: vault.title || String(vault.id),
+    icon: vaultIcon(vault)
   }));
   const current = st.vault;
   if (current && !entries.some((entry) => entry.id === String(current.id))) {
-    entries.unshift({ id: String(current.id), title: current.title || String(current.id) });
+    entries.unshift({
+      id: String(current.id),
+      title: current.title || String(current.id),
+      icon: vaultIcon(current)
+    });
   }
   return entries;
 }
@@ -1061,10 +1223,10 @@ function lockVaultEntries() {
 function renderLockVault() {
   const st = S.status || {};
   const current = st.vault
-    ? { id: String(st.vault.id), title: st.vault.title || String(st.vault.id) }
+    ? { id: String(st.vault.id), title: st.vault.title || String(st.vault.id), icon: vaultIcon(st.vault) }
     : null;
   const chosen = pendingVault || current;
-  $("lockVaultName").textContent = chosen ? chosen.title : "Choose storage";
+  $("lockVaultName").textContent = chosen ? `${chosen.icon ? chosen.icon + " " : ""}${chosen.title}` : "Choose storage";
   const note = $("lockVaultNote");
   if (!chosen) {
     note.textContent = "No storage vault found yet. Enter your PIN first to scan Telegram.";
@@ -1095,7 +1257,7 @@ function renderLockVaultList() {
       type: "button",
       title: chosen ? "This vault will open" : `Open ${entry.title} after the PIN`
     },
-      h("span", { class: "lock-vault-row-mark", html: svgRaw("archive") }),
+      h("span", { class: "lock-vault-row-mark", text: vaultIcon(entry) }),
       h("span", { class: "lock-vault-row-name", text: entry.title }),
       h("span", { class: "lock-vault-row-check", html: chosen ? svgRaw("check") : "" })
     );
@@ -2140,6 +2302,7 @@ function renderSidebar() {
   $("countAll").textContent = stats.count ? String(stats.count) : "";
   $("countFav").textContent = stats.favorites ? String(stats.favorites) : "";
   $("countHidden").textContent = stats.hidden ? String(stats.hidden) : "";
+  $("countStars").textContent = S.nav.stars ? String(S.nav.stars) : "";
   $("storageCount").textContent = plural(stats.count || 0, "file");
   $("storageSize").textContent = fmtSize(stats.size || 0);
   const bar = $("storageBar");
@@ -2150,6 +2313,7 @@ function renderSidebar() {
       ((node.dataset.nav === "all" && S.navMode === "all") ||
        (node.dataset.nav === "recent" && S.navMode === "recent") ||
        (node.dataset.nav === "favorites" && S.navMode === "favorites") ||
+       (node.dataset.nav === "stars" && S.navMode === "stars") ||
        (node.dataset.nav === "hidden" && S.navMode === "hidden"));
     node.classList.toggle("active", active);
   });
@@ -2259,6 +2423,13 @@ function renderKindOptions() {
   select.value = S.kind;
 }
 function updateStatusCounts() {
+  if (isStarCatalogue()) {
+    $("countText").textContent = plural((S.stars || []).length, "star");
+    $("sizeText").textContent = "";
+    $("loadMoreWrap").hidden = true;
+    setStatus("");
+    return;
+  }
   const count = S.total || 0;
   const folders = visibleSubfolders().length;
   $("countText").textContent = folders
@@ -2275,16 +2446,32 @@ function updateStatusCounts() {
 }
 function updateBreadcrumb() {
   const nodes = [];
-  const rootLabel = S.navMode === "favorites" ? "Favorites"
+  const rootLabel = S.navMode === "stars" ? "Stars"
+    : S.navMode === "favorites" ? "Favorites"
     : S.navMode === "recent" ? "Recent"
     : S.navMode === "hidden" ? "Hidden" : "All files";
-  const atRoot = !S.folder && !S.tag;
+  const atRoot = !S.folder && !S.tag && !S.starId;
   if (atRoot) {
     nodes.push(h("span", { class: "crumb current", text: rootLabel, title: rootLabel }));
   } else {
     const root = h("button", { class: "crumb link", type: "button", text: rootLabel, title: rootLabel });
-    root.addEventListener("click", () => navigateScope({ navMode: S.navMode, folder: "", tag: "", kind: "", q: "" }));
+    root.addEventListener("click", () => {
+      if (S.navMode === "stars") navigateScope({ navMode: "stars", starId: null, q: "" });
+      else navigateScope({ navMode: S.navMode, folder: "", tag: "", kind: "", q: "" });
+    });
     nodes.push(root);
+  }
+  if (S.starId) {
+    const star = currentStar();
+    nodes.push(h("span", { class: "sep", text: "›" }));
+    const label = star ? star.name : "Star";
+    if (S.q) {
+      const crumb = h("button", { class: "crumb link", type: "button", text: label, title: label });
+      crumb.addEventListener("click", () => navigateScope({ navMode: "stars", starId: S.starId, q: "" }));
+      nodes.push(crumb);
+    } else {
+      nodes.push(h("span", { class: "crumb current", text: label, title: label }));
+    }
   }
   if (S.folder) {
     const parts = S.folder.split("/");
@@ -2311,7 +2498,7 @@ function updateBreadcrumb() {
     nodes.push(h("span", { class: "crumb current", text: `“${S.q}”` }));
   }
   $("breadcrumb").replaceChildren(...nodes);
-  $("upBtn").disabled = !(S.folder || S.tag || S.kind || S.q);
+  $("upBtn").disabled = !(S.folder || S.tag || S.kind || S.q || S.starId);
   $("backBtn").disabled = S.histIndex <= 0;
   $("forwardBtn").disabled = S.histIndex >= S.history.length - 1;
 }
@@ -2329,6 +2516,7 @@ async function loadItems(options) {
   setStatus(reset ? "Loading…" : "Loading more…");
   const params = new URLSearchParams();
   if (S.q) params.set("q", S.q);
+  if (S.starId) params.set("star", String(S.starId));
   if (S.kind) params.set("kind", S.kind);
   if (S.folder) params.set("folder", S.folder);
   if (S.tag) params.set("tag", S.tag);
@@ -2361,6 +2549,7 @@ async function loadItems(options) {
     S.itemsPending = false;
     renderItems();
     updateStatusCounts();
+    if (S.starId) renderStarBanner();
     setStatus(data.total ? `${plural(data.total, "item")} in this view` : "");
     if (S.items.length < data.total) setStatus(`${S.items.length} of ${data.total} items loaded`);
   } catch (error) {
@@ -2384,6 +2573,14 @@ function showLoading(show) {
   }
 }
 function scopedEmptyContent() {
+  if (S.starId) {
+    return {
+      title: "No files for this star yet",
+      text: "Assign files from a file’s Stars menu, or select several files and use Stars in the bulk bar.",
+      sync: false,
+      upload: false
+    };
+  }
   if (S.q) {
     return {
       title: `No matches for “${S.q}”`,
@@ -2433,6 +2630,22 @@ function scopedEmptyContent() {
 }
 function renderItems() {
   showLoading(false);
+  const catalogue = isStarCatalogue();
+  $("starCatalogue").hidden = !catalogue;
+  $("starBanner").hidden = !S.starId;
+  $("content").classList.toggle("star-page", Boolean(S.starId));
+  if (catalogue) {
+    $("emptyView").hidden = true;
+    $("detailsView").hidden = true;
+    $("tilesView").hidden = true;
+    $("loadMoreWrap").hidden = true;
+    $("rows").replaceChildren();
+    $("tilesView").replaceChildren();
+    renderStarCatalogue();
+    updateBreadcrumb();
+    renderSelection();
+    return;
+  }
   const folders = visibleSubfolders();
   if (S.selectedFolderPath && !folders.some((entry) => entry.folder.toLowerCase() === S.selectedFolderPath.toLowerCase())) {
     S.selectedFolderPath = null;
@@ -2586,6 +2799,9 @@ function buildRow(item) {
     subParts.join(subParts.length > 1 ? " · " : ""),
     item.note ? h("span", { class: "note-mark", html: svgRaw("note") }) : null
   ));
+  if (item.stars && item.stars.length) {
+    nameBlock.append(h("span", { class: "name-sub row-stars" }, item.stars.map((star) => starChip(star))));
+  }
   const typeCell = h("div", { class: "cell cell-type" },
     h("span", { class: "type-cell" }, h("span", { class: "type-label", text: item.kind_label || "File" }))
   );
@@ -2614,6 +2830,7 @@ function buildTile(item) {
   const part = partLabel(item);
   if (part) media.append(h("span", { class: "tile-badge", text: part }));
   if (item.favorite) media.append(h("span", { class: "tile-badge", style: "right:auto;left:6px;display:grid;place-items:center", html: svgRaw("starFilled") }));
+  if (item.stars && item.stars.length) media.append(tileStarsBadge(item.stars));
   if (item.note) media.append(h("span", { class: "tile-badge note", title: item.note, html: svgRaw("note") }));
   const body = h("div", { class: "tile-body" },
     h("div", { class: "tile-name", text: item.name, title: item.name }),
@@ -2640,6 +2857,23 @@ function setView(view) {
   updateSortArrows();
   renderItems();
 }
+function applyPreviewState() {
+  const collapsed = Boolean(S.previewCollapsed);
+  const pane = $("previewPane");
+  const shell = pane.closest(".shell");
+  const button = $("previewToggle");
+  pane.classList.toggle("collapsed", collapsed);
+  if (shell) shell.classList.toggle("preview-collapsed", collapsed);
+  button.title = collapsed ? "Show details" : "Hide details";
+  button.setAttribute("aria-label", button.title);
+  button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  setIcon($("previewToggleIcon"), collapsed ? "chevronLeft" : "chevron");
+}
+function togglePreview() {
+  S.previewCollapsed = !S.previewCollapsed;
+  savePrefs({ preview: S.previewCollapsed ? "hidden" : "shown" });
+  applyPreviewState();
+}
 function updateSortArrows() {
   document.querySelectorAll(".col[data-sort]").forEach((node) => {
     const arrow = node.querySelector(".sort-arrow");
@@ -2661,16 +2895,18 @@ function setSort(sort, explicitDir) {
   localStorage.setItem("tfe_dir", S.dir);
   savePrefs({ sort: S.sort, dir: S.dir });
   updateSortArrows();
-  loadItems({ reset: true });
+  if (!isStarCatalogue()) loadItems({ reset: true });
 }
 function setStatus(text) {
   $("statusText").textContent = text || "";
 }
 function setScope(scope, pushHistory) {
-  const previous = { navMode: S.navMode, folder: S.folder, tag: S.tag, kind: S.kind, favorite: S.favorite };
+  const previous = { navMode: S.navMode, folder: S.folder, tag: S.tag, kind: S.kind, favorite: S.favorite, starId: S.starId };
   S.navMode = scope.navMode !== undefined ? scope.navMode : "all";
   S.folder = scope.folder || "";
   S.tag = scope.tag || "";
+  S.starId = scope.starId !== undefined ? scope.starId : null;
+  if (S.starId) S.navMode = "stars";
   if (scope.kind !== undefined) S.kind = scope.kind;
   else if (S.folder || S.tag) S.kind = "";
   S.favorite = S.navMode === "favorites";
@@ -2678,10 +2914,20 @@ function setScope(scope, pushHistory) {
   if (scope.sort) S.sort = scope.sort;
   if (scope.dir) S.dir = scope.dir;
   S.q = scope.q || "";
+  if (S.starId) {
+    const cached = starById(S.starId);
+    if (cached) S.starInfo = cached;
+    else if (!S.starInfo || Number(S.starInfo.id) !== Number(S.starId)) S.starInfo = null;
+  } else {
+    S.starInfo = null;
+  }
   const search = $("searchInput");
   if (search.value !== S.q) search.value = S.q;
   S.selectedId = null;
   S.selectedFolderPath = null;
+  S.selection.clear();
+  S.selectionAnchor = null;
+  renderSelection();
   if (pushHistory !== false) {
     const current = S.history[S.histIndex];
     const next = snapshot();
@@ -2690,7 +2936,11 @@ function setScope(scope, pushHistory) {
   updateSortArrows();
   renderSidebar();
   renderPreview();
-  loadItems({ reset: true });
+  if (isStarCatalogue()) {
+    renderItems();
+    loadStars();
+  } else loadItems({ reset: true });
+  if (S.starId && !S.starInfo) loadStarInfo(S.starId);
   void previous;
 }
 function navigateScope(scope) {
@@ -2713,6 +2963,7 @@ function applyHistory() {
   S.folder = snap.folder;
   S.tag = snap.tag;
   S.kind = snap.kind;
+  S.starId = snap.starId || null;
   S.favorite = snap.favorite;
   S.hiddenOnly = snap.navMode === "hidden";
   S.sort = snap.sort || S.sort;
@@ -2721,15 +2972,23 @@ function applyHistory() {
   $("searchInput").value = "";
   S.selectedId = null;
   S.selectedFolderPath = null;
+  S.selection.clear();
+  S.selectionAnchor = null;
+  renderSelection();
+  S.starInfo = S.starId ? starById(S.starId) : null;
   updateSortArrows();
   renderSidebar();
   renderPreview();
-  loadItems({ reset: true });
+  if (isStarCatalogue()) {
+    renderItems();
+    loadStars();
+  } else loadItems({ reset: true });
+  if (S.starId && !S.starInfo) loadStarInfo(S.starId);
 }
 function snapshot() {
   return {
     navMode: S.navMode, folder: S.folder, tag: S.tag, kind: S.kind,
-    favorite: S.favorite, sort: S.sort, dir: S.dir
+    favorite: S.favorite, sort: S.sort, dir: S.dir, starId: S.starId
   };
 }
 function pushSnapshot() {
@@ -2744,6 +3003,10 @@ function resetHistory() {
   pushSnapshot();
 }
 function goUp() {
+  if (S.starId) {
+    navigateScope({ navMode: "stars", starId: null, q: "" });
+    return;
+  }
   if (S.folder) {
     const cut = S.folder.lastIndexOf("/");
     const parent = cut > 0 ? S.folder.slice(0, cut) : "";
@@ -2903,6 +3166,10 @@ function renderPreview() {
     chip.addEventListener("click", () => navigateScope({ navMode: "all", tag }));
     tags.append(chip);
   }
+  const starRow = $("previewStars");
+  starRow.replaceChildren();
+  for (const star of item.stars || []) starRow.append(starChip(star));
+  starRow.hidden = !(item.stars && item.stars.length);
   $("favoriteBtn").textContent = item.favorite ? "Unfavorite" : "Favorite";
   $("thumbBtn").hidden = item.kind !== "video";
   $("restoreBtn").hidden = !item.hidden;
@@ -2924,6 +3191,8 @@ function renderFolderPreview(folder) {
   $("folderActions").hidden = false;
   $("fileMore").hidden = true;
   $("folderMore").hidden = false;
+  $("previewStars").hidden = true;
+  $("previewStars").replaceChildren();
   $("previewName").textContent = folder.name || folder.folder;
   $("previewName").title = folder.folder;
   $("previewKind").textContent =
@@ -3450,6 +3719,587 @@ async function startMergeDownload(item) {
   }
 }
 
+/* ------------------------------------------------------------------- stars */
+let starSeq = 0;
+function isStarCatalogue() {
+  return S.navMode === "stars" && !S.starId;
+}
+function reloadCurrentList() {
+  if (isStarCatalogue()) loadStars();
+  else loadItems({ reset: true });
+}
+function starById(id) {
+  return (S.stars || []).find((star) => Number(star.id) === Number(id)) || null;
+}
+function currentStar() {
+  if (!S.starId) return null;
+  if (S.starInfo && Number(S.starInfo.id) === Number(S.starId)) return S.starInfo;
+  return starById(S.starId);
+}
+function starChip(star) {
+  const chip = h("button", {
+    class: "star-chip",
+    type: "button",
+    title: `Open ${star.name}`,
+    "data-star": String(star.id)
+  }, iconNode("user", "star-chip-icon"), h("span", { text: star.name }));
+  chip.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openStar(Number(star.id));
+  });
+  return chip;
+}
+function tileStarsBadge(stars) {
+  const badge = h("button", {
+    class: "tile-badge tile-stars",
+    type: "button",
+    title: stars.map((star) => star.name).join(", "),
+    "data-star": String(stars[0].id)
+  }, iconNode("user", "tile-star-icon"), h("span", { text: stars.length === 1 ? stars[0].name : String(stars.length) }));
+  badge.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (stars.length === 1) openStar(Number(stars[0].id));
+    else showStarsMenu(event, stars);
+  });
+  return badge;
+}
+function showStarsMenu(event, stars) {
+  showContextMenu(event.clientX, event.clientY, stars.map((star) => ({
+    label: star.name, icon: "user", onClick: () => openStar(Number(star.id))
+  })));
+}
+function openStar(id) {
+  if (!id) return;
+  const cached = starById(id);
+  if (cached) S.starInfo = cached;
+  else if (S.starInfo && Number(S.starInfo.id) !== Number(id)) S.starInfo = null;
+  navigateScope({ navMode: "stars", starId: Number(id), folder: "", tag: "", kind: "", q: "" });
+}
+async function loadStars() {
+  const seq = ++starSeq;
+  const params = new URLSearchParams();
+  if (S.q) params.set("q", S.q);
+  try {
+    const data = await api(`/api/stars?${params.toString()}`);
+    if (seq !== starSeq) return;
+    S.stars = data.stars || [];
+    S.starTotal = data.total || S.stars.length;
+    if (isStarCatalogue()) {
+      renderItems();
+      updateStatusCounts();
+    }
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+async function loadStarInfo(id) {
+  try {
+    const star = await api(`/api/stars/${id}`);
+    if (Number(S.starId) !== Number(id)) return;
+    S.starInfo = star;
+    const index = (S.stars || []).findIndex((entry) => Number(entry.id) === Number(star.id));
+    if (index >= 0) S.stars[index] = star;
+    renderStarBanner();
+    updateBreadcrumb();
+  } catch (error) {
+    toast(error.message, "error");
+    if (error.status === 404) navigateScope({ navMode: "stars", starId: null, q: "" });
+  }
+}
+function renderStarCatalogue() {
+  const grid = $("starGrid");
+  grid.replaceChildren();
+  const stars = S.stars || [];
+  const empty = $("starEmpty");
+  empty.hidden = stars.length > 0;
+  $("starEmptyTitle").textContent = S.q ? `No stars match “${S.q}”` : "No stars yet";
+  $("starEmptyText").textContent = S.q
+    ? "Try another name, or clear the search."
+    : "Create a star, then assign files from a file’s Stars menu or the bulk bar.";
+  for (const star of stars) {
+    const card = h("button", {
+      class: "star-card",
+      type: "button",
+      title: star.name,
+      "data-star": String(star.id)
+    });
+    const portrait = h("span", { class: "star-portrait" });
+    if (star.image_url) {
+      const image = h("img", { src: star.image_url, alt: "", loading: "lazy" });
+      image.addEventListener("error", () => {
+        image.remove();
+        portrait.classList.add("initial");
+        portrait.textContent = initials(star.name);
+      });
+      portrait.append(image);
+    } else {
+      portrait.classList.add("initial");
+      portrait.textContent = initials(star.name);
+    }
+    const metaBits = [];
+    if (star.birthdate) metaBits.push(String(star.birthdate).slice(0, 4));
+    if (star.country) metaBits.push(star.country);
+    if (star.height) metaBits.push(star.height);
+    const body = h("span", { class: "star-card-body" },
+      h("span", { class: "star-name", text: star.name }),
+      metaBits.length ? h("span", { class: "star-meta", text: metaBits.join(" · ") }) : null,
+      h("span", { class: "star-counts", text: `${plural(star.videos || 0, "video")} · ${plural(star.images || 0, "image")}` })
+    );
+    card.append(portrait, body);
+    if (star.favorite) card.append(h("span", { class: "star-fav", html: svgRaw("starFilled") }));
+    grid.append(card);
+  }
+}
+function renderStarBanner() {
+  const banner = $("starBanner");
+  const star = currentStar();
+  if (!star) {
+    banner.hidden = true;
+    banner.replaceChildren();
+    return;
+  }
+  banner.hidden = false;
+  const portrait = h("div", { class: "star-portrait large" });
+  if (star.image_url) {
+    const image = h("img", { src: star.image_url, alt: "", loading: "lazy" });
+    image.addEventListener("error", () => {
+      image.remove();
+      portrait.classList.add("initial");
+      portrait.textContent = initials(star.name);
+    });
+    portrait.append(image);
+  } else {
+    portrait.classList.add("initial");
+    portrait.textContent = initials(star.name);
+  }
+  const fav = h("button", {
+    class: "icon-btn star-fav-btn" + (star.favorite ? " active" : ""),
+    type: "button",
+    title: star.favorite ? "Remove from favorites" : "Add to favorites",
+    html: svgRaw(star.favorite ? "starFilled" : "star")
+  });
+  fav.addEventListener("click", async () => {
+    try {
+      const updated = await api(`/api/stars/${star.id}`, { method: "PATCH", body: { favorite: !star.favorite } });
+      S.starInfo = updated;
+      const index = (S.stars || []).findIndex((entry) => Number(entry.id) === Number(updated.id));
+      if (index >= 0) S.stars[index] = updated;
+      renderStarBanner();
+    } catch (error) { toast(error.message, "error"); }
+  });
+  const facts = [
+    ["Birthday", star.birthdate],
+    ["Country", star.country],
+    ["Height", star.height],
+    ["Hair", star.hair],
+    ["Eyes", star.eyes],
+    ["Measurements", star.measurements],
+    ["Tattoos", star.tattoos],
+    ["Piercings", star.piercings],
+    ["Aliases", star.aliases]
+  ].filter(([, value]) => String(value || "").trim());
+  const dl = h("dl", { class: "star-facts" });
+  for (const [label, value] of facts) dl.append(h("dt", { text: label }), h("dd", { text: value }));
+  const counts = `${plural(star.n || 0, "file")} · ${plural(star.videos || 0, "video")} · ${plural(star.images || 0, "image")} · ${fmtSize(star.total_size || 0)}`;
+  const actions = h("div", { class: "star-banner-actions" },
+    btn("Edit details", "btn", () => promptStarEditor(star)),
+    btn("Look up online", "btn", () => promptStarLookup(star)),
+    btn("Portrait", "btn", () => promptStarPortrait(star)),
+    btn("All stars", "link-btn", () => navigateScope({ navMode: "stars", starId: null, q: "" }))
+  );
+  banner.replaceChildren(h("div", { class: "star-banner-inner" },
+    portrait,
+    h("div", { class: "star-banner-main" },
+      h("div", { class: "star-banner-head" }, h("h2", { text: star.name }), fav),
+      h("div", { class: "star-banner-counts", text: counts }),
+      dl,
+      star.note ? h("p", { class: "star-note", text: star.note }) : null,
+      actions
+    )
+  ));
+}
+function openStarMenu(event, star) {
+  event.preventDefault();
+  event.stopPropagation();
+  showContextMenu(event.clientX, event.clientY, [
+    { label: "Open star page", icon: "user", onClick: () => openStar(star.id) },
+    { separator: true },
+    { label: "Edit details…", icon: "edit", onClick: () => promptStarEditor(star) },
+    { label: "Look up online…", icon: "search", onClick: () => promptStarLookup(star) },
+    { label: "Change portrait…", icon: "image", onClick: () => promptStarPortrait(star) },
+    { separator: true },
+    { label: "Delete star…", icon: "trash", danger: true, onClick: () => confirmDeleteStar(star) }
+  ]);
+}
+async function afterStarChange(star) {
+  if (star) {
+    if (S.starInfo && Number(S.starInfo.id) === Number(star.id)) S.starInfo = star;
+    const index = (S.stars || []).findIndex((entry) => Number(entry.id) === Number(star.id));
+    if (index >= 0) S.stars[index] = star;
+    else S.stars.push(star);
+  }
+  await loadNav();
+  if (isStarCatalogue()) {
+    renderStarCatalogue();
+    return;
+  }
+  if (S.starId) {
+    renderStarBanner();
+    await loadItems({ reset: true });
+    if (S.selectedId !== null) renderPreview();
+    return;
+  }
+  await loadItems({ reset: true });
+}
+function starField(key, label, star, options, hint) {
+  const opts = options || {};
+  let input;
+  if (opts.textarea) {
+    input = h("textarea", { class: "note-input", rows: String(opts.rows || 4), maxlength: String(opts.max || 4000) });
+  } else {
+    input = inputEl({ type: "text", maxlength: String(opts.max || 160), autocomplete: "off" });
+  }
+  input.value = star ? String(star[key] || "") : "";
+  return field(label, input, hint);
+}
+function starFieldInput(container) {
+  return container.querySelector("input, textarea");
+}
+function promptStarEditor(star) {
+  const editing = Boolean(star);
+  const name = starField("name", "Name", star, { max: 80 }, "The stage name shown in the catalogue.");
+  const aliases = starField("aliases", "Also known as", star, { max: 160 }, "Comma-separated aliases. Search matches these too.");
+  const country = starField("country", "Country", star, { max: 80 });
+  const birthdate = starField("birthdate", "Birthday", star, { max: 40 }, "YYYY-MM-DD, or just a year.");
+  const height = starField("height", "Height", star, { max: 40 });
+  const hair = starField("hair", "Hair", star, { max: 40 });
+  const eyes = starField("eyes", "Eyes", star, { max: 40 });
+  const measurements = starField("measurements", "Measurements", star, { max: 80 });
+  const tattoos = starField("tattoos", "Tattoos", star, { textarea: true, rows: 3, max: 1000 });
+  const piercings = starField("piercings", "Piercings", star, { max: 200 });
+  const note = starField("note", "Note", star, { textarea: true, rows: 5, max: 4000 });
+  const fields = { name, aliases, country, birthdate, height, hair, eyes, measurements, tattoos, piercings, note };
+  const content = h("div", { class: "star-editor" },
+    name,
+    aliases,
+    h("div", { class: "star-editor-row" }, country, birthdate),
+    h("div", { class: "star-editor-row" }, height, hair, eyes),
+    measurements,
+    tattoos,
+    piercings,
+    note
+  );
+  const actions = [{ label: "Cancel", onClick: closeModal }];
+  if (editing) {
+    actions.push({ label: "Delete", class: "danger", onClick: () => { closeModal(); confirmDeleteStar(star); } });
+  }
+  actions.push({
+    label: editing ? "Save" : "Create star",
+    class: "primary",
+    onClick: async (setBusy) => {
+      const body = {};
+      for (const [key, wrapper] of Object.entries(fields)) {
+        const input = starFieldInput(wrapper);
+        body[key] = input ? input.value.trim() : "";
+      }
+      if (!body.name) { toast("A star needs a name.", "error"); starFieldInput(name).focus(); return; }
+      setBusy(true);
+      try {
+        const saved = editing
+          ? await api(`/api/stars/${star.id}`, { method: "PATCH", body })
+          : await api("/api/stars", { method: "POST", body });
+        closeModal();
+        toast(editing ? "Star details saved." : `Created ${saved.name}.`, "success");
+        S.starInfo = saved;
+        await afterStarChange(saved);
+        if (!editing) openStar(saved.id);
+      } catch (error) {
+        toast(error.message, "error");
+      } finally {
+        setBusy(false);
+      }
+    }
+  });
+  openModal({
+    title: editing ? "Edit star" : "New star",
+    subtitle: editing ? star.name : undefined,
+    wide: true,
+    content,
+    actions
+  });
+}
+function confirmDeleteStar(star) {
+  if (!star) return;
+  openModal({
+    title: "Delete star",
+    subtitle: star.name,
+    content: h("div", {},
+      h("p", { text: `Remove ${star.name} from the catalogue?` }),
+      h("p", { class: "modal-note", text: "Files stay in the library. Only the star page, its details and its assignments are deleted." })
+    ),
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Delete star",
+        class: "danger",
+        onClick: async () => {
+          try {
+            await api(`/api/stars/${star.id}`, { method: "DELETE" });
+            closeModal();
+            S.stars = (S.stars || []).filter((entry) => Number(entry.id) !== Number(star.id));
+            toast("Star deleted.", "success");
+            if (Number(S.starId) === Number(star.id)) {
+              S.starInfo = null;
+              navigateScope({ navMode: "stars", starId: null, q: "" });
+            } else {
+              await afterStarChange();
+            }
+          } catch (error) { toast(error.message, "error"); }
+        }
+      }
+    ]
+  });
+}
+function promptStarLookup(star) {
+  if (!star) return;
+  const overwrite = inputEl({ type: "checkbox" });
+  const status = h("p", { class: "modal-note", text: "IAFD is checked first, then Wikipedia. This needs an internet connection." });
+  const overwriteRow = h("label", { class: "check" },
+    overwrite,
+    h("span", {},
+      h("strong", { text: "Overwrite existing fields" }),
+      h("small", { text: "Leave off to fill only the empty fields and add missing aliases." })
+    )
+  );
+  openModal({
+    title: "Look up details online",
+    subtitle: star.name,
+    content: h("div", {},
+      status,
+      overwriteRow
+    ),
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Search online",
+        class: "primary",
+        onClick: async (setBusy) => {
+          setBusy(true);
+          status.textContent = "Searching IAFD…";
+          try {
+            const data = await api(`/api/stars/${star.id}/lookup`, {
+              method: "POST",
+              body: { overwrite: overwrite.checked }
+            });
+            const applied = data.applied || [];
+            closeModal();
+            const source = data.source || "the web";
+            const extra = data.image ? " and set the portrait" : "";
+            toast(
+              applied.length
+                ? `Updated ${plural(applied.length, "field")} from ${source}${extra}.`
+                : `Found ${data.title || star.name} on ${source}, but every field was already filled.`,
+              "success",
+              6000
+            );
+            S.starInfo = data.star;
+            await afterStarChange(data.star);
+          } catch (error) {
+            status.textContent = error.message;
+            toast(error.message, "error", 8000);
+          } finally {
+            setBusy(false);
+          }
+        }
+      }
+    ]
+  });
+}
+function promptStarPortrait(star) {
+  if (!star) return;
+  const file = h("input", { type: "file", accept: "image/jpeg,image/png,image/gif,image/webp", hidden: "" });
+  const status = h("p", { class: "modal-note", text: "Upload a picture, or click a thumbnail from this star’s files." });
+  const grid = h("div", { class: "star-portrait-grid" });
+  const upload = btn("Upload image…", "btn", () => file.click());
+  file.addEventListener("change", async () => {
+    const chosen = file.files && file.files[0];
+    file.value = "";
+    if (!chosen) return;
+    if (chosen.size > 12 * 1024 * 1024) { toast("Choose an image under 12 MB.", "error"); return; }
+    const form = new FormData();
+    form.append("file", chosen, chosen.name || "portrait.jpg");
+    status.textContent = "Uploading portrait…";
+    try {
+      const updated = await api(`/api/stars/${star.id}/image`, { method: "POST", form });
+      closeModal();
+      toast("Portrait updated.", "success");
+      await afterStarChange(updated);
+    } catch (error) {
+      status.textContent = "Upload failed.";
+      toast(error.message, "error");
+    }
+  });
+  openModal({
+    title: "Star portrait",
+    subtitle: star.name,
+    wide: true,
+    content: h("div", {}, status, h("div", { class: "star-portrait-actions" }, upload), file, grid),
+    actions: [{ label: "Close", onClick: closeModal }]
+  });
+  api(`/api/items?star=${star.id}&limit=60&sort=date&direction=desc`)
+    .then((data) => {
+      if (!grid.isConnected) return;
+      const items = (data.items || []).filter((entry) => entry.has_thumb);
+      if (!items.length) {
+        grid.append(h("p", { class: "modal-note", text: "This star has no file thumbnails yet — upload a picture instead." }));
+        return;
+      }
+      grid.append(h("p", { class: "star-portrait-hint", text: "Thumbnails from this star’s files" }));
+      for (const item of items) {
+        const tile = h("button", { class: "star-portrait-choice", type: "button", title: item.name },
+          h("img", { src: item.thumb_url, alt: "", loading: "lazy" })
+        );
+        tile.addEventListener("click", async () => {
+          try {
+            const updated = await api(`/api/stars/${star.id}/image/from-item`, {
+              method: "POST",
+              body: { item_id: item.id }
+            });
+            closeModal();
+            toast("Portrait updated.", "success");
+            await afterStarChange(updated);
+          } catch (error) { toast(error.message, "error"); }
+        });
+        grid.append(tile);
+      }
+    })
+    .catch(() => {});
+}
+async function promptStars(item) {
+  const bulk = !item;
+  if (bulk && !S.selection.size) return;
+  let stars = [];
+  try {
+    const suffix = item ? `?item=${item.id}` : "";
+    const data = await api(`/api/stars${suffix}`);
+    stars = data.stars || [];
+  } catch (error) {
+    toast(error.message, "error");
+    return;
+  }
+  const chosen = new Set(stars.filter((star) => star.assigned).map((star) => Number(star.id)));
+  const list = h("div", { class: "star-pick-list" });
+  const search = inputEl({ type: "search", class: "star-pick-search", placeholder: "Search stars", autocomplete: "off" });
+  const empty = h("p", { class: "modal-note", text: "No stars match. Create one below." });
+  const renderList = () => {
+    const term = search.value.trim().toLowerCase();
+    list.replaceChildren();
+    const shown = stars.filter((star) => !term
+      || String(star.name || "").toLowerCase().includes(term)
+      || String(star.aliases || "").toLowerCase().includes(term));
+    if (!shown.length) {
+      empty.textContent = stars.length ? "No stars match that search." : "No stars yet. Create one below.";
+      list.append(empty);
+      return;
+    }
+    for (const star of shown) {
+      const picked = chosen.has(Number(star.id));
+      const row = h("button", { class: "star-pick" + (picked ? " selected" : ""), type: "button" });
+      const portrait = h("span", { class: "star-pick-portrait" });
+      if (star.image_url) portrait.append(h("img", { src: star.image_url, alt: "", loading: "lazy" }));
+      else { portrait.classList.add("initial"); portrait.textContent = initials(star.name); }
+      row.append(
+        portrait,
+        h("span", { class: "star-pick-body" },
+          h("span", { class: "star-pick-name", text: star.name }),
+          h("span", { class: "star-pick-meta", text: `${plural(star.videos || 0, "video")} · ${plural(star.images || 0, "image")}` })
+        ),
+        h("span", { class: "star-pick-check", html: picked ? svgRaw("check") : "" })
+      );
+      row.addEventListener("click", () => {
+        const id = Number(star.id);
+        if (chosen.has(id)) chosen.delete(id);
+        else chosen.add(id);
+        renderList();
+      });
+      list.append(row);
+    }
+  };
+  search.addEventListener("input", renderList);
+  renderList();
+  const createName = inputEl({ type: "text", placeholder: "New star name", maxlength: "80", autocomplete: "off" });
+  const create = btn("Create", "btn", async () => {
+    const name = createName.value.trim();
+    if (!name) { toast("Enter a name for the new star.", "error"); createName.focus(); return; }
+    try {
+      const created = await api("/api/stars", { method: "POST", body: { name } });
+      stars.push(created);
+      chosen.add(Number(created.id));
+      createName.value = "";
+      renderList();
+      toast(`Created ${created.name}. Save to assign it.`, "success", 5000);
+    } catch (error) { toast(error.message, "error"); }
+  });
+  createName.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); create.click(); }
+  });
+  const content = h("div", {},
+    h("p", { class: "modal-note", text: bulk
+      ? `Tick every star that appears in the ${plural(S.selection.size, "selected file")}.`
+      : "Tick every star that appears in this file." }),
+    search,
+    list,
+    h("div", { class: "star-pick-new" }, createName, create)
+  );
+  openModal({
+    title: bulk ? "Assign stars" : "Stars in this file",
+    subtitle: bulk ? undefined : item.name,
+    wide: true,
+    content,
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Save",
+        class: "primary",
+        onClick: async (setBusy) => {
+          setBusy(true);
+          try {
+            if (bulk) {
+              if (!chosen.size) { toast("Choose at least one star.", "error"); return; }
+              const data = await api("/api/items/stars", {
+                method: "POST",
+                body: { item_ids: Array.from(S.selection), star_ids: Array.from(chosen) }
+              });
+              clearSelection();
+              toast(`Added ${plural(data.files, "file")} to ${plural(data.stars, "star")}.`, "success");
+            } else {
+              await api(`/api/items/${item.id}/stars`, {
+                method: "PUT",
+                body: { star_ids: Array.from(chosen) }
+              });
+              toast("Stars saved for this file.", "success");
+            }
+            closeModal();
+            await Promise.all([loadNav(), loadItems({ reset: true })]);
+            if (!bulk && S.items.some((entry) => entry.id === item.id)) selectItem(item.id);
+            if (S.navMode === "stars") {
+              if (S.starId) loadStarInfo(S.starId);
+              else loadStars();
+            }
+          } catch (error) {
+            toast(error.message, "error");
+          } finally {
+            setBusy(false);
+          }
+        }
+      }
+    ]
+  });
+  search.focus();
+}
+
 /* ------------------------------------------------------------ bulk select */
 function bulkIds() {
   return Array.from(S.selection);
@@ -3684,6 +4534,7 @@ function openBulkMenu(event) {
     { label: `Download ${plural(S.selection.size, "file")} (ZIP)`, icon: "download", onClick: bulkDownload },
     { label: "Move to folder…", icon: "move", onClick: promptBulkMove },
     { label: "Add to favorites", icon: "star", onClick: bulkFavorite },
+    { label: "Assign stars…", icon: "user", onClick: () => promptStars(null) },
     { label: "Copy Telegram links", icon: "link", onClick: bulkCopyLinks },
     { separator: true },
     { label: `Delete ${plural(S.selection.size, "file")}…`, icon: "trash", danger: true, onClick: promptBulkDelete }
@@ -4552,6 +5403,7 @@ function openItemMenu(event, item) {
     { label: "Rename…", icon: "edit", key: "F2", onClick: () => promptRename() },
     { label: "Move to folder…", icon: "move", onClick: () => promptMove() },
     { label: "Edit tags…", icon: "tag", onClick: () => promptTags() },
+    { label: "Stars…", icon: "user", onClick: () => promptStars(item) },
     { label: item.note ? "Edit note…" : "Add note…", icon: "note", onClick: () => promptNote(item) },
     { label: item.favorite ? "Remove from favorites" : "Add to favorites", icon: "star", onClick: () => toggleFavorite(item) },
     { separator: true }
@@ -4956,30 +5808,32 @@ function bindEvents() {
       if (node.dataset.nav === "recent") navigateScope({ navMode: "recent", folder: "", tag: "", kind: "", sort: "added", dir: "desc" });
       else if (node.dataset.nav === "favorites") navigateScope({ navMode: "favorites", folder: "", tag: "", kind: "", sort: "date", dir: "desc" });
       else if (node.dataset.nav === "hidden") navigateScope({ navMode: "hidden", folder: "", tag: "", kind: "", sort: "date", dir: "desc" });
+      else if (node.dataset.nav === "stars") navigateScope({ navMode: "stars", folder: "", tag: "", kind: "", q: "" });
       else navigateScope({ navMode: "all", folder: "", tag: "", kind: "", sort: "date", dir: "desc" });
     });
   });
   $("backBtn").addEventListener("click", goBack);
   $("forwardBtn").addEventListener("click", goForward);
   $("upBtn").addEventListener("click", goUp);
+  $("previewToggle").addEventListener("click", togglePreview);
   $("searchInput").addEventListener("input", debounce(() => {
     S.q = $("searchInput").value.trim();
     updateBreadcrumb();
-    loadItems({ reset: true });
+    reloadCurrentList();
   }, 220));
   $("searchInput").addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       $("searchInput").value = "";
       S.q = "";
       updateBreadcrumb();
-      loadItems({ reset: true });
+      reloadCurrentList();
       $("searchInput").blur();
     }
   });
   $("kindSelect").addEventListener("change", () => {
     S.kind = $("kindSelect").value;
     updateBreadcrumb();
-    loadItems({ reset: true });
+    reloadCurrentList();
   });
   $("sortSelect").addEventListener("change", () => setSort($("sortSelect").value, $("sortSelect").value === "name" ? "asc" : "desc"));
   $("sortDirBtn").addEventListener("click", () => {
@@ -4987,7 +5841,7 @@ function bindEvents() {
     localStorage.setItem("tfe_dir", S.dir);
     savePrefs({ dir: S.dir });
     updateSortArrows();
-    loadItems({ reset: true });
+    if (!isStarCatalogue()) loadItems({ reset: true });
   });
   document.querySelectorAll(".col[data-sort]").forEach((node) => {
     node.addEventListener("click", () => setSort(node.dataset.sort));
@@ -4996,12 +5850,20 @@ function bindEvents() {
     node.addEventListener("click", () => setView(node.dataset.view));
   });
   $("rows").addEventListener("click", (event) => {
+    const chip = event.target.closest(".star-chip");
+    if (chip) {
+      event.preventDefault();
+      event.stopPropagation();
+      openStar(Number(chip.dataset.star));
+      return;
+    }
     const row = event.target.closest(".row");
     if (!row) return;
     if (row.dataset.folder) selectFolderRow(row.dataset.folder);
     else handleItemClick(Number(row.dataset.id), event);
   });
   $("rows").addEventListener("dblclick", (event) => {
+    if (event.target.closest(".star-chip")) return;
     const row = event.target.closest(".row");
     if (!row) return;
     if (row.dataset.folder) { openFolder(row.dataset.folder); return; }
@@ -5026,12 +5888,24 @@ function bindEvents() {
     openItemMenu(event, item);
   });
   $("tilesView").addEventListener("click", (event) => {
+    const chip = event.target.closest(".tile-stars");
+    if (chip) {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = S.items.find((entry) => entry.id === Number(chip.closest(".tile").dataset.id));
+      if (item && item.stars) {
+        if (item.stars.length === 1) openStar(Number(item.stars[0].id));
+        else showStarsMenu(event, item.stars);
+      }
+      return;
+    }
     const tile = event.target.closest(".tile");
     if (!tile) return;
     if (tile.dataset.folder) selectFolderRow(tile.dataset.folder);
     else handleItemClick(Number(tile.dataset.id), event);
   });
   $("tilesView").addEventListener("dblclick", (event) => {
+    if (event.target.closest(".tile-stars")) return;
     const tile = event.target.closest(".tile");
     if (!tile) return;
     if (tile.dataset.folder) { openFolder(tile.dataset.folder); return; }
@@ -5060,9 +5934,15 @@ function bindEvents() {
     if (S.selection.size || S.selectedId !== null || S.selectedFolderPath) clearSelection();
   });
   $("content").addEventListener("contextmenu", (event) => {
-    if (event.target.closest(".row, .tile")) return;
+    if (event.target.closest(".row, .tile, .star-card")) return;
     event.preventDefault();
     if (!ready()) return;
+    if (S.navMode === "stars") {
+      showContextMenu(event.clientX, event.clientY, [
+        { label: "New star…", icon: "user", onClick: () => promptStarEditor(null) }
+      ]);
+      return;
+    }
     showContextMenu(event.clientX, event.clientY, [
       { label: "New folder…", icon: "folderPlus", onClick: () => promptNewFolder(S.folder) },
       { separator: true },
@@ -5070,6 +5950,19 @@ function bindEvents() {
       { label: "Upload folder…", icon: "uploadFolder", onClick: () => $("folderInput").click() }
     ]);
   });
+  $("starGrid").addEventListener("click", (event) => {
+    const card = event.target.closest(".star-card");
+    if (card) openStar(Number(card.dataset.star));
+  });
+  $("starGrid").addEventListener("contextmenu", (event) => {
+    const card = event.target.closest(".star-card");
+    if (!card) return;
+    const star = starById(Number(card.dataset.star));
+    if (star) openStarMenu(event, star);
+  });
+  $("starNewBtn").addEventListener("click", () => promptStarEditor(null));
+  $("starsBtn").addEventListener("click", () => promptStars(selectedItem()));
+  $("bulkStars").addEventListener("click", () => promptStars(null));
   $("clearTagBtn").addEventListener("click", () => navigateScope({ navMode: "all", tag: "" }));
   $("newFolderBtn").addEventListener("click", () => promptNewFolder(S.folder));
   $("filterBtn").addEventListener("click", promptFilters);
@@ -5299,7 +6192,12 @@ function handleKeydown(event) {
       S.q = "";
       $("searchInput").value = "";
       updateBreadcrumb();
-      loadItems({ reset: true });
+      reloadCurrentList();
+      event.preventDefault();
+      return;
+    }
+    if (S.starId) {
+      navigateScope({ navMode: "stars", starId: null, q: "" });
       event.preventDefault();
     }
     return;

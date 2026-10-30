@@ -8,7 +8,7 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/vendor/videojs/video-js.min.css">
   <link rel="stylesheet" href="/static/vendor/viewerjs/viewer.min.css">
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v=6">
 </head>
 <body>
   <div class="app">
@@ -86,6 +86,11 @@
             <span class="nav-label">Favorites</span>
             <span class="nav-count" id="countFav"></span>
           </button>
+          <button class="nav-item" data-nav="stars">
+            <span class="nav-icon" data-icon="user"></span>
+            <span class="nav-label">Stars</span>
+            <span class="nav-count" id="countStars"></span>
+          </button>
           <button class="nav-item" data-nav="hidden">
             <span class="nav-icon" data-icon="eyeOff"></span>
             <span class="nav-label">Hidden</span>
@@ -127,7 +132,7 @@
           <div class="toolbar-tools">
             <label class="searchbox">
               <span class="search-icon" aria-hidden="true"></span>
-              <input id="searchInput" type="search" placeholder="Search files" autocomplete="off" spellcheck="false">
+              <input id="searchInput" type="search" placeholder="Search files and stars" autocomplete="off" spellcheck="false">
               <kbd>Ctrl F</kbd>
             </label>
             <select class="select" id="kindSelect" title="Filter by type" aria-label="Filter by type">
@@ -143,6 +148,7 @@
               <option value="size">Size</option>
               <option value="kind">Type</option>
               <option value="folder">Folder</option>
+              <option value="star">Star</option>
               <option value="added">Date added</option>
             </select>
             <button class="icon-btn" id="sortDirBtn" title="Descending" aria-label="Toggle sort direction"></button>
@@ -161,6 +167,23 @@
               <span id="dropTarget">All files</span>
             </div>
           </div>
+
+          <div class="star-catalogue" id="starCatalogue" hidden>
+            <div class="star-cat-head">
+              <div>
+                <h2>Stars</h2>
+                <p>Performer pages with a portrait, details and every file they appear in.</p>
+              </div>
+              <button class="btn primary" id="starNewBtn" type="button">New star</button>
+            </div>
+            <div class="star-grid" id="starGrid"></div>
+            <div class="star-empty" id="starEmpty" hidden>
+              <strong id="starEmptyTitle">No stars yet</strong>
+              <p id="starEmptyText">Create a star, then assign files from a file's Stars menu.</p>
+            </div>
+          </div>
+
+          <div class="star-banner" id="starBanner" hidden></div>
 
           <div class="details" id="detailsView">
             <div class="details-header" id="detailsHeader">
@@ -203,6 +226,7 @@
           <span class="bulk-spacer"></span>
           <button class="btn" id="bulkDownload" title="Download the selected files as one ZIP">Download</button>
           <button class="btn" id="bulkFavorite" title="Add the selected files to favorites">Favorite</button>
+          <button class="btn" id="bulkStars" title="Assign the selected files to stars">Stars</button>
           <button class="btn" id="bulkMove" title="Move the selected files to a folder">Move</button>
           <button class="btn" id="bulkLinks" title="Copy the Telegram links of the selected files">Copy links</button>
           <button class="btn danger" id="bulkDelete" title="Delete the selected files">Delete</button>
@@ -230,56 +254,65 @@
       </main>
 
       <aside class="preview" id="previewPane">
-        <div class="preview-empty" id="previewEmpty">
-          <span class="preview-empty-icon"></span>
-          <p>Select a file to see details and a preview.</p>
-          <small>Space or double-click opens the player.</small>
-        </div>
-        <div class="preview-body" id="previewBody" hidden>
-          <div class="preview-media" id="previewMedia"></div>
-          <div class="preview-info">
-            <h3 id="previewName"></h3>
-            <div class="preview-kind" id="previewKind"></div>
-            <dl id="previewMeta"></dl>
-            <div class="preview-tags" id="previewTags"></div>
-            <div class="preview-actions" id="fileActions">
-              <button class="btn primary" id="openBtn">Open</button>
-              <button class="btn" id="downloadBtn">Download</button>
-              <button class="btn" id="thumbBtn" hidden title="Pick the thumbnail shown in the library">Thumbnail</button>
-              <button class="btn" id="completeBtn" hidden title="Download every part and join them into the original file">Download complete file</button>
-              <button class="btn" id="favoriteBtn">Favorite</button>
-              <button class="btn" id="restoreBtn" hidden>Restore</button>
-              <a class="btn" id="tgLink" target="_blank" rel="noopener noreferrer" hidden>Open in Telegram</a>
-            </div>
-            <div class="preview-actions" id="folderActions" hidden>
-              <button class="btn primary" id="folderOpenBtn">Open</button>
-              <button class="btn" id="folderZipBtn">Download ZIP</button>
-              <button class="btn" id="folderPropsBtn">Properties</button>
-            </div>
-            <div class="preview-more" id="fileMore">
-              <button class="link-btn" id="renameBtn">Rename</button>
-              <span>·</span>
-              <button class="link-btn" id="moveBtn">Move</button>
-              <span>·</span>
-              <button class="link-btn" id="tagsBtn">Tags</button>
-              <span>·</span>
-              <button class="link-btn danger" id="deleteBtn">Delete</button>
-            </div>
-            <div class="preview-more" id="folderMore" hidden>
-              <button class="link-btn" id="folderNewBtn">New subfolder</button>
-              <span>·</span>
-              <button class="link-btn" id="folderPropsLink">Icon &amp; note</button>
-              <span>·</span>
-              <button class="link-btn" id="folderRenameBtn">Rename</button>
-              <span>·</span>
-              <button class="link-btn danger" id="folderDeleteBtn">Delete</button>
-            </div>
-            <div class="preview-note" id="previewNote" hidden>
-              <div class="preview-note-head">
-                <span>Note</span>
-                <button class="link-btn" id="noteBtn" type="button">Edit</button>
+        <button class="preview-head" id="previewToggle" type="button" title="Hide details" aria-label="Hide details" aria-expanded="true">
+          <span class="preview-head-title">Details</span>
+          <span class="preview-head-icon" id="previewToggleIcon"></span>
+        </button>
+        <div class="preview-scroll" id="previewScroll">
+          <div class="preview-empty" id="previewEmpty">
+            <span class="preview-empty-icon"></span>
+            <p>Select a file to see details and a preview.</p>
+            <small>Space or double-click opens the player.</small>
+          </div>
+          <div class="preview-body" id="previewBody" hidden>
+            <div class="preview-media" id="previewMedia"></div>
+            <div class="preview-info">
+              <h3 id="previewName"></h3>
+              <div class="preview-kind" id="previewKind"></div>
+              <dl id="previewMeta"></dl>
+              <div class="preview-tags" id="previewTags"></div>
+              <div class="preview-stars" id="previewStars"></div>
+              <div class="preview-actions" id="fileActions">
+                <button class="btn primary" id="openBtn">Open</button>
+                <button class="btn" id="downloadBtn">Download</button>
+                <button class="btn" id="thumbBtn" hidden title="Pick the thumbnail shown in the library">Thumbnail</button>
+                <button class="btn" id="completeBtn" hidden title="Download every part and join them into the original file">Download complete file</button>
+                <button class="btn" id="favoriteBtn">Favorite</button>
+                <button class="btn" id="restoreBtn" hidden>Restore</button>
+                <a class="btn" id="tgLink" target="_blank" rel="noopener noreferrer" hidden>Open in Telegram</a>
               </div>
-              <p id="previewNoteText"></p>
+              <div class="preview-actions" id="folderActions" hidden>
+                <button class="btn primary" id="folderOpenBtn">Open</button>
+                <button class="btn" id="folderZipBtn">Download ZIP</button>
+                <button class="btn" id="folderPropsBtn">Properties</button>
+              </div>
+              <div class="preview-more" id="fileMore">
+                <button class="link-btn" id="renameBtn">Rename</button>
+                <span>·</span>
+                <button class="link-btn" id="moveBtn">Move</button>
+                <span>·</span>
+                <button class="link-btn" id="tagsBtn">Tags</button>
+                <span>·</span>
+                <button class="link-btn" id="starsBtn">Stars</button>
+                <span>·</span>
+                <button class="link-btn danger" id="deleteBtn">Delete</button>
+              </div>
+              <div class="preview-more" id="folderMore" hidden>
+                <button class="link-btn" id="folderNewBtn">New subfolder</button>
+                <span>·</span>
+                <button class="link-btn" id="folderPropsLink">Icon &amp; note</button>
+                <span>·</span>
+                <button class="link-btn" id="folderRenameBtn">Rename</button>
+                <span>·</span>
+                <button class="link-btn danger" id="folderDeleteBtn">Delete</button>
+              </div>
+              <div class="preview-note" id="previewNote" hidden>
+                <div class="preview-note-head">
+                  <span>Note</span>
+                  <button class="link-btn" id="noteBtn" type="button">Edit</button>
+                </div>
+                <p id="previewNoteText"></p>
+              </div>
             </div>
           </div>
         </div>
@@ -398,6 +431,6 @@
   <script src="/static/vendor/videojs/video.min.js"></script>
   <script src="/static/vendor/sprite-thumbnails/videojs-sprite-thumbnails.min.js"></script>
   <script src="/static/vendor/viewerjs/viewer.min.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=6"></script>
 </body>
 </html>

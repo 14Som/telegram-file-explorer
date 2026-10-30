@@ -24,6 +24,7 @@ from telethon import TelegramClient, errors, types, utils
 from telethon.tl.functions.channels import (
     CreateChannelRequest,
     EditAdminRequest,
+    EditTitleRequest,
     GetFullChannelRequest,
     InviteToChannelRequest,
 )
@@ -303,6 +304,10 @@ class TelegramService:
                     "id": str(self._vault["id"]),
                     "title": self._vault.get("title") or str(self._vault["id"]),
                     "username": self._vault.get("username") or "",
+                    "icon": self._vault.get("icon")
+                    or appconfig.pick_vault_icon(
+                        entry.get("icon") for entry in entries
+                    ),
                     "active": True,
                 },
             )
@@ -473,6 +478,19 @@ class TelegramService:
         return None
 
     def _activate_vault(self, entity: Any, info: Dict[str, Any]) -> None:
+        info = dict(info)
+        if info.get("icon") not in appconfig.VAULT_ICONS:
+            known = next(
+                (
+                    vault.get("icon")
+                    for vault in self._vault_registry
+                    if vault["id"] == str(info["id"])
+                ),
+                None,
+            )
+            info["icon"] = known or appconfig.pick_vault_icon(
+                vault.get("icon") for vault in self._vault_registry
+            )
         self._entity = entity
         self._vault = info
         self._settings = appconfig.save_settings(
@@ -498,6 +516,7 @@ class TelegramService:
             "id": str(info.get("id")),
             "title": str(info.get("title") or info.get("id")),
             "username": str(info.get("username") or ""),
+            "icon": str(info.get("icon") or ""),
         }
         try:
             self._vault_registry = appconfig.remember_vault(entry)
@@ -819,6 +838,7 @@ class TelegramService:
                     "id": str(self._vault["id"]),
                     "title": self._vault.get("title") or str(self._vault["id"]),
                     "username": self._vault.get("username") or "",
+                    "icon": self._vault.get("icon") or "",
                 }
             try:
                 await self._scan_vaults(client, merged)
@@ -826,6 +846,16 @@ class TelegramService:
                 if not merged:
                     raise TGError(friendly_error(exc))
                 log.warning("Vault scan incomplete: %s", friendly_error(exc))
+            # Every vault gets a distinct icon the first time it is seen.
+            taken = {
+                entry["icon"]
+                for entry in merged.values()
+                if entry.get("icon") in appconfig.VAULT_ICONS
+            }
+            for entry in merged.values():
+                if entry.get("icon") not in appconfig.VAULT_ICONS:
+                    entry["icon"] = appconfig.pick_vault_icon(taken)
+                    taken.add(entry["icon"])
             active_id = str((self._vault or {}).get("id") or "")
             entries = list(merged.values())
             entries.sort(
@@ -1078,6 +1108,88 @@ class TelegramService:
             "vaults": self._public_vaults(),
             "bot": bot_result,
         }
+
+    async def rename_vault(self, vault_id: str, title: str) -> Dict[str, Any]:
+        """Rename a storage channel so the app and Telegram stay in sync."""
+        self._last_error = None
+        client = self._require_client()
+        if not self._authorized:
+            raise TGError("Log in first.")
+        clean = " ".join(str(title or "").split()).strip()
+        if not clean:
+            raise TGError("Give the vault a name.")
+        if len(clean) > 128:
+            raise TGError("That name is too long (128 characters at most).")
+        target = str(vault_id or "").strip()
+        if not target:
+            raise TGError("Choose a vault first.")
+        active_id = str((self._vault or {}).get("id") or "")
+        if target == active_id and self._entity is not None:
+            entity = self._entity
+        else:
+            entity, _ = await self._resolve_target(target)
+        if not isinstance(entity, types.Channel):
+            raise TGError("Only channels can be storage vaults.")
+        try:
+            await client(EditTitleRequest(channel=entity, title=clean))
+        except errors.ChatAdminRequiredError as exc:
+            raise TGError(
+                "You need to be an admin of this channel to rename it."
+            ) from exc
+        except Exception as exc:
+            raise TGError(friendly_error(exc))
+        try:
+            entity.title = clean
+        except Exception:
+            pass
+        if target == active_id:
+            # Updating the active vault's title must not disturb a running
+            # sync the way a real switch does.
+            self._vault = {**self._vault, "title": clean}
+            self._settings = appconfig.save_settings({"vault_title": clean})
+            self._remember_vault(self._vault)
+        else:
+            entry = next(
+                (vault for vault in self._vault_registry if vault["id"] == target),
+                None,
+            )
+            if entry is not None:
+                self._vault_registry = appconfig.update_vault(
+                    {**entry, "title": clean}
+                )
+            self._vaults_cache = None
+            self._vaults_cache_at = 0.0
+        log.info("Renamed storage vault %s in Telegram", target)
+        return {"vault": self._vault, "vaults": self._public_vaults()}
+
+    def set_vault_icon(self, vault_id: str, icon: str) -> Dict[str, Any]:
+        """Pick the icon that tells this vault apart in the switcher."""
+        self._last_error = None
+        target = str(vault_id or "").strip()
+        if not target:
+            raise TGError("Choose a vault first.")
+        chosen = str(icon or "").strip()
+        if chosen not in appconfig.VAULT_ICONS:
+            raise TGError("Pick one of the offered icons.")
+        entry = next(
+            (vault for vault in self._vault_registry if vault["id"] == target),
+            None,
+        )
+        if entry is None and self._vault and str(self._vault.get("id")) == target:
+            entry = {
+                "id": target,
+                "title": self._vault.get("title") or target,
+                "username": self._vault.get("username") or "",
+                "icon": chosen,
+            }
+        if entry is None:
+            raise TGError("That vault is not in the list. Refresh and try again.")
+        self._vault_registry = appconfig.update_vault({**entry, "icon": chosen})
+        if self._vault and str(self._vault.get("id")) == target:
+            self._vault = {**self._vault, "icon": chosen}
+        self._vaults_cache = None
+        self._vaults_cache_at = 0.0
+        return {"vault": self._vault, "vaults": self._public_vaults()}
 
     async def list_channels(self, query: str = "") -> List[Dict[str, Any]]:
         client = self._require_client()

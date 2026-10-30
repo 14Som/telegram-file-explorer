@@ -7,3 +7,4 @@ build/
 *.log
 *.session
 TelegramFileBot.exe
+installer/__pycache__/

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import random
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 APP_NAME = "TelegramFileExplorer"
 APP_TITLE = "Telegram File Explorer"
@@ -32,13 +34,22 @@ DEFAULTS: Dict[str, Any] = {
     "vault_title": "",
     "vaults": "[]",
     "helper_bot": "",
-    "run_bot": "1",
+    "run_bot": "",
     "pin_salt": "",
     "pin_hash": "",
     "pin_skipped": "",
 }
 
 VAULT_LIMIT = 50
+
+# Icons that tell storage vaults apart in the switcher. They live inside the
+# vault registry, so they travel with the library snapshot like the names do.
+VAULT_ICONS = (
+    "🗄️", "📦", "🗃️", "💾", "🎞️",
+    "📚", "🔐", "🚀", "🌙", "🔥",
+    "💎", "🧊", "🌊", "🍀", "⚡",
+    "🎬", "🖼️", "📀", "🧰", "🧿",
+)
 
 _sizes = ("B", "KB", "MB", "GB", "TB")
 
@@ -106,6 +117,18 @@ def clear_session_files() -> None:
             pass
 
 
+def _fallback_icon(vault_id: str) -> str:
+    digest = hashlib.sha1(vault_id.encode("utf-8")).hexdigest()
+    return VAULT_ICONS[int(digest, 16) % len(VAULT_ICONS)]
+
+
+def pick_vault_icon(taken: Iterable[str] = ()) -> str:
+    """A random icon that no other vault currently uses, when possible."""
+    used = {str(icon) for icon in taken}
+    options = [icon for icon in VAULT_ICONS if icon not in used] or list(VAULT_ICONS)
+    return random.choice(options)
+
+
 def _clean_vault(entry: Dict[str, Any]) -> Optional[Dict[str, str]]:
     try:
         vault_id = str(int(entry.get("id")))
@@ -113,7 +136,10 @@ def _clean_vault(entry: Dict[str, Any]) -> Optional[Dict[str, str]]:
         return None
     title = str(entry.get("title") or vault_id).strip()[:128] or vault_id
     username = str(entry.get("username") or "").strip()[:64]
-    return {"id": vault_id, "title": title, "username": username}
+    icon = str(entry.get("icon") or "").strip()
+    if icon not in VAULT_ICONS:
+        icon = _fallback_icon(vault_id)
+    return {"id": vault_id, "title": title, "username": username, "icon": icon}
 
 
 def load_vaults() -> List[Dict[str, str]]:
@@ -143,6 +169,22 @@ def remember_vault(vault: Dict[str, Any]) -> List[Dict[str, str]]:
         return load_vaults()
     entries = [item for item in load_vaults() if item["id"] != entry["id"]]
     entries.insert(0, entry)
+    save_settings({"vaults": json.dumps(entries[:VAULT_LIMIT])})
+    return entries[:VAULT_LIMIT]
+
+
+def update_vault(vault: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Change a known vault, keeping its place in the list."""
+    entry = _clean_vault(vault)
+    if entry is None:
+        return load_vaults()
+    entries = load_vaults()
+    for index, item in enumerate(entries):
+        if item["id"] == entry["id"]:
+            entries[index] = entry
+            break
+    else:
+        entries.insert(0, entry)
     save_settings({"vaults": json.dumps(entries[:VAULT_LIMIT])})
     return entries[:VAULT_LIMIT]
 
