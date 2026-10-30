@@ -54,6 +54,10 @@ const SVG = {
   chevron: '<path d="m9 18 6-6-6-6"/>',
   chevronLeft: '<path d="m15 18-6-6 6-6"/>',
   external: '<path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/>',
+  cube: '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="m4 7.5 8 4.5 8-4.5"/><path d="M12 12v9"/>',
+  cad: '<path d="M4 20 20 4"/><path d="M14 4h6v6"/><path d="M4 14v6h6"/>',
+  layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/><path d="m3 17 9 5 9-5"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
   foldCompact: '<path d="m7 20 5-5 5 5"/><path d="m7 4 5 5 5-5"/>',
   foldExpand: '<path d="m7 9 5-5 5 5"/><path d="m7 15 5 5 5-5"/>'
 };
@@ -66,6 +70,8 @@ const FILE_GLYPHS = {
   audio: "audio",
   voice: "audio",
   document: "document",
+  model: "cube",
+  cad: "cad",
   sticker: "sticker",
   gif: "play",
   other: "file"
@@ -267,7 +273,7 @@ const S = {
   vaultMenuOpen: false,
   vaultBusy: false,
   vaultRefreshBusy: false,
-  nav: { folders: [], tags: [], kinds: [], stars: 0, stats: { count: 0, size: 0, favorites: 0, last_sync: null } },
+  nav: { folders: [], tags: [], kinds: [], stars: 0, collections: [], views: [], stats: { count: 0, size: 0, favorites: 0, playing: 0, last_sync: null } },
   stars: [],
   starTotal: 0,
   starId: null,
@@ -283,6 +289,8 @@ const S = {
   folder: "",
   tag: "",
   kind: "",
+  collection: null,
+  watching: false,
   favorite: false,
   hiddenOnly: false,
   renderedStage: "",
@@ -837,6 +845,8 @@ function resetVaultView() {
   S.folder = "";
   S.tag = "";
   S.kind = "";
+  S.collection = null;
+  S.watching = false;
   S.q = "";
   S.favorite = false;
   S.hiddenOnly = false;
@@ -2302,6 +2312,7 @@ function renderSidebar() {
   $("countAll").textContent = stats.count ? String(stats.count) : "";
   $("countFav").textContent = stats.favorites ? String(stats.favorites) : "";
   $("countHidden").textContent = stats.hidden ? String(stats.hidden) : "";
+  $("countPlaying").textContent = stats.playing ? String(stats.playing) : "";
   $("countStars").textContent = S.nav.stars ? String(S.nav.stars) : "";
   $("storageCount").textContent = plural(stats.count || 0, "file");
   $("storageSize").textContent = fmtSize(stats.size || 0);
@@ -2309,9 +2320,10 @@ function renderSidebar() {
   if (bar && bar.parentElement) bar.parentElement.hidden = true;
 
   document.querySelectorAll("#nav .nav-item").forEach((node) => {
-    const active = !S.folder && !S.tag &&
+    const active = !S.folder && !S.tag && !S.collection &&
       ((node.dataset.nav === "all" && S.navMode === "all") ||
        (node.dataset.nav === "recent" && S.navMode === "recent") ||
+       (node.dataset.nav === "continue" && S.navMode === "continue") ||
        (node.dataset.nav === "favorites" && S.navMode === "favorites") ||
        (node.dataset.nav === "stars" && S.navMode === "stars") ||
        (node.dataset.nav === "hidden" && S.navMode === "hidden"));
@@ -2377,6 +2389,57 @@ function renderSidebar() {
     }
   }
 
+  const collectionList = $("collectionList");
+  collectionList.replaceChildren();
+  const collections = S.nav.collections || [];
+  if (!collections.length) {
+    collectionList.append(h("div", { class: "side-empty", text: "No collections yet" }));
+  } else {
+    for (const collection of collections) {
+      const node = h("button", {
+        class: "side-item" + (S.collection === collection.id ? " active" : ""),
+        type: "button",
+        title: collection.name
+      },
+        h("span", { class: "side-item-icon", html: svgRaw("layers") }),
+        h("span", { class: "side-item-name", text: collection.name }),
+        h("span", { class: "nav-count", text: collection.n ? String(collection.n) : "" })
+      );
+      node.addEventListener("click", () => navigateScope({ navMode: "collection", collection: collection.id, folder: "", tag: "", kind: "" }));
+      node.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        showContextMenu(event.clientX, event.clientY, [
+          { label: "Rename collection…", icon: "edit", onClick: () => promptRenameCollection(collection) },
+          { label: "Delete collection", icon: "trash", danger: true, onClick: () => promptDeleteCollection(collection) }
+        ]);
+      });
+      collectionList.append(node);
+    }
+  }
+
+  const viewList = $("viewList");
+  viewList.replaceChildren();
+  const views = S.nav.views || [];
+  if (!views.length) {
+    viewList.append(h("div", { class: "side-empty", text: "Save a filter set to reuse it" }));
+  } else {
+    for (const view of views) {
+      const node = h("button", { class: "side-item", type: "button", title: view.name },
+        h("span", { class: "side-item-icon", html: svgRaw("filter") }),
+        h("span", { class: "side-item-name", text: view.name })
+      );
+      node.addEventListener("click", () => applySavedView(view));
+      node.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        showContextMenu(event.clientX, event.clientY, [
+          { label: "Apply view", icon: "filter", onClick: () => applySavedView(view) },
+          { label: "Delete view", icon: "trash", danger: true, onClick: () => deleteSavedView(view) }
+        ]);
+      });
+      viewList.append(node);
+    }
+  }
+
   const tagList = $("tagList");
   tagList.replaceChildren();
   const tags = S.nav.tags || [];
@@ -2384,8 +2447,17 @@ function renderSidebar() {
     tagList.append(h("div", { class: "side-empty", text: "No tags yet" }));
   } else {
     for (const tag of tags) {
-      const node = h("button", { class: "tag-chip" + (S.tag.toLowerCase() === tag.tag.toLowerCase() ? " active" : ""), type: "button", title: `${plural(tag.count, "file")}` }, `#${tag.tag}`);
+      const color = tag.color || "";
+      const node = h("button", {
+        class: "tag-chip" + (S.tag.toLowerCase() === tag.tag.toLowerCase() ? " active" : ""),
+        type: "button",
+        title: `${plural(tag.count, "file")}${tag.group ? ` · ${tag.group}` : ""}`
+      }, color ? h("i", { class: "tag-dot", style: `background:${color}` }) : null, `#${tag.tag}`);
       node.addEventListener("click", () => navigateScope({ navMode: "all", tag: tag.tag }));
+      node.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        promptTagMeta(tag);
+      });
       tagList.append(node);
     }
   }
@@ -2449,6 +2521,8 @@ function updateBreadcrumb() {
   const rootLabel = S.navMode === "stars" ? "Stars"
     : S.navMode === "favorites" ? "Favorites"
     : S.navMode === "recent" ? "Recent"
+    : S.navMode === "continue" ? "Continue watching"
+    : S.navMode === "collection" ? (collectionById(S.collection)?.name || "Collection")
     : S.navMode === "hidden" ? "Hidden" : "All files";
   const atRoot = !S.folder && !S.tag && !S.starId;
   if (atRoot) {
@@ -2498,7 +2572,7 @@ function updateBreadcrumb() {
     nodes.push(h("span", { class: "crumb current", text: `“${S.q}”` }));
   }
   $("breadcrumb").replaceChildren(...nodes);
-  $("upBtn").disabled = !(S.folder || S.tag || S.kind || S.q || S.starId);
+  $("upBtn").disabled = !(S.folder || S.tag || S.kind || S.q || S.starId || S.collection || S.watching);
   $("backBtn").disabled = S.histIndex <= 0;
   $("forwardBtn").disabled = S.histIndex >= S.history.length - 1;
 }
@@ -2521,6 +2595,8 @@ async function loadItems(options) {
   if (S.folder) params.set("folder", S.folder);
   if (S.tag) params.set("tag", S.tag);
   if (S.favorite) params.set("favorite", "1");
+  if (S.collection) params.set("collection", String(S.collection));
+  if (S.watching) params.set("watching", "1");
   if (S.hiddenOnly) params.set("hidden", "1");
   if (S.filters.min !== "" && Number.isFinite(Number(S.filters.min))) {
     params.set("min_size", String(Math.max(0, Math.round(Number(S.filters.min) * 1024 * 1024))));
@@ -2605,6 +2681,22 @@ function scopedEmptyContent() {
       upload: true
     };
   }
+  if (S.navMode === "continue") {
+    return {
+      title: "Nothing to continue",
+      text: "Files you have started playing appear here so you can pick them up again.",
+      sync: false,
+      upload: false
+    };
+  }
+  if (S.navMode === "collection") {
+    return {
+      title: "This collection is empty",
+      text: "Select files in All files and use Collection to add them here. A file can be in several collections.",
+      sync: false,
+      upload: false
+    };
+  }
   if (S.navMode === "favorites") {
     return {
       title: "No favorites yet",
@@ -2629,6 +2721,7 @@ function scopedEmptyContent() {
   };
 }
 function renderItems() {
+  stopHoverPreview();
   showLoading(false);
   const catalogue = isStarCatalogue();
   $("starCatalogue").hidden = !catalogue;
@@ -2794,6 +2887,11 @@ function buildRow(item) {
   if (part) subParts.push(part);
   if (item.tag_list && item.tag_list.length) subParts.push(item.tag_list.slice(0, 3).map((tag) => `#${tag}`).join(" "));
   else if (item.caption) subParts.push(item.caption.slice(0, 90));
+  if (item.meta && Array.isArray(item.meta.fields)) {
+    const fields = Object.fromEntries(item.meta.fields.filter((pair) => Array.isArray(pair)));
+    const hint = fields.Bounds || fields.Dimensions || (fields.Triangles ? `${fields.Triangles} triangles` : "");
+    if (hint) subParts.push(hint);
+  }
   if (item.note) subParts.push("Note");
   if (subParts.length) nameBlock.append(h("span", { class: "name-sub" },
     subParts.join(subParts.length > 1 ? " · " : ""),
@@ -2814,6 +2912,90 @@ function buildRow(item) {
   );
   return row;
 }
+/* --------------------------------------------------------- hover preview
+   Stash-style: hovering a tile enlarges the cover, and video tiles play a
+   short muted loop from the middle of the clip after a short delay. Only one
+   preview runs at a time; it is torn down as soon as the pointer leaves. */
+const HOVER_PREVIEW_DELAY = 420;
+const HOVER_PREVIEW_SECONDS = 12;
+let hoverTimer = 0;
+let hoverTarget = null;
+let hoverVideo = null;
+let hoverObserver = null;
+
+function hoverPreviewWindow(item) {
+  const duration = Number(item.duration) || 0;
+  if (duration <= HOVER_PREVIEW_SECONDS + 4) return null;
+  const start = Math.min(Math.max(2, duration * 0.15), duration - HOVER_PREVIEW_SECONDS);
+  return { start, end: start + HOVER_PREVIEW_SECONDS };
+}
+
+function stopHoverPreview() {
+  if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = 0; }
+  if (hoverObserver) { hoverObserver.disconnect(); hoverObserver = null; }
+  if (hoverVideo) {
+    hoverVideo.pause();
+    hoverVideo.removeAttribute("src");
+    hoverVideo.load();
+    hoverVideo.remove();
+    hoverVideo = null;
+  }
+  if (hoverTarget) {
+    hoverTarget.classList.remove("hover-preview");
+    hoverTarget = null;
+  }
+}
+
+function startHoverPreview(tile, item) {
+  const media = tile.querySelector(".tile-media");
+  if (!media) return;
+  hoverTarget = tile;
+  tile.classList.add("hover-preview");
+  if (!isVideoLike(item) || !item.stream_url) return;
+  const video = h("video", { class: "tile-hover-video" });
+  video.muted = true;
+  video.loop = true;
+  video.playsInline = true;
+  video.preload = "metadata";
+  hoverVideo = video;
+  video.src = item.stream_url;
+  const previewWindow = hoverPreviewWindow(item);
+  if (previewWindow) {
+    let rewinding = false;
+    video.addEventListener("loadedmetadata", () => {
+      if (hoverVideo !== video) return;
+      try { video.currentTime = previewWindow.start; } catch (_) {}
+      const started = video.play();
+      if (started && started.catch) started.catch(() => {});
+    }, { once: true });
+    video.addEventListener("timeupdate", () => {
+      if (rewinding || hoverVideo !== video) return;
+      if (video.currentTime >= previewWindow.end) {
+        rewinding = true;
+        try { video.currentTime = previewWindow.start; } catch (_) {}
+      }
+    });
+    video.addEventListener("seeked", () => { rewinding = false; });
+  }
+  video.addEventListener("loadeddata", () => {
+    if (hoverVideo === video) video.classList.add("ready");
+  }, { once: true });
+  video.addEventListener("error", () => {
+    if (hoverVideo === video) stopHoverPreview();
+  });
+  media.append(video);
+  if (!previewWindow) {
+    const started = video.play();
+    if (started && started.catch) started.catch(() => {});
+  }
+  if ("IntersectionObserver" in window) {
+    hoverObserver = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => !entry.isIntersecting)) stopHoverPreview();
+    });
+    hoverObserver.observe(video);
+  }
+}
+
 function buildTile(item) {
   const media = h("div", { class: "tile-media" });
   if (item.has_thumb && item.thumb_url) {
@@ -2827,6 +3009,13 @@ function buildTile(item) {
   if ((item.kind === "video" || item.kind === "audio" || item.kind === "voice") && item.duration) badge = fmtDuration(item.duration);
   else if (item.kind === "gif") badge = "GIF";
   if (badge) media.append(h("span", { class: "tile-badge", text: badge }));
+  if (item.movie && item.movie.rating) {
+    media.append(h("span", {
+      class: "tile-badge tile-rating",
+      title: item.movie.votes ? `${item.movie.votes.toLocaleString()} IMDb votes` : "IMDb rating",
+      text: `★ ${Number(item.movie.rating).toFixed(1)}`
+    }));
+  }
   const part = partLabel(item);
   if (part) media.append(h("span", { class: "tile-badge", text: part }));
   if (item.favorite) media.append(h("span", { class: "tile-badge", style: "right:auto;left:6px;display:grid;place-items:center", html: svgRaw("starFilled") }));
@@ -2906,6 +3095,12 @@ function setScope(scope, pushHistory) {
   S.folder = scope.folder || "";
   S.tag = scope.tag || "";
   S.starId = scope.starId !== undefined ? scope.starId : null;
+  S.collection = scope.collection !== undefined && scope.collection !== null
+    ? Number(scope.collection)
+    : (S.navMode === "collection" ? S.collection : null);
+  S.watching = scope.watching !== undefined ? Boolean(scope.watching) : S.navMode === "continue";
+  if (S.watching) S.navMode = "continue";
+  if (S.collection) S.navMode = "collection";
   if (S.starId) S.navMode = "stars";
   if (scope.kind !== undefined) S.kind = scope.kind;
   else if (S.folder || S.tag) S.kind = "";
@@ -2964,6 +3159,8 @@ function applyHistory() {
   S.tag = snap.tag;
   S.kind = snap.kind;
   S.starId = snap.starId || null;
+  S.collection = snap.collection || null;
+  S.watching = Boolean(snap.watching);
   S.favorite = snap.favorite;
   S.hiddenOnly = snap.navMode === "hidden";
   S.sort = snap.sort || S.sort;
@@ -2988,7 +3185,8 @@ function applyHistory() {
 function snapshot() {
   return {
     navMode: S.navMode, folder: S.folder, tag: S.tag, kind: S.kind,
-    favorite: S.favorite, sort: S.sort, dir: S.dir, starId: S.starId
+    favorite: S.favorite, sort: S.sort, dir: S.dir, starId: S.starId,
+    collection: S.collection, watching: S.watching
   };
 }
 function pushSnapshot() {
@@ -3005,6 +3203,10 @@ function resetHistory() {
 function goUp() {
   if (S.starId) {
     navigateScope({ navMode: "stars", starId: null, q: "" });
+    return;
+  }
+  if (S.collection || S.watching) {
+    navigateScope({ navMode: "all", folder: "", tag: "", kind: "", q: "" });
     return;
   }
   if (S.folder) {
@@ -3129,6 +3331,10 @@ function renderPreview() {
     empty.hidden = false;
     body.hidden = true;
     media.replaceChildren();
+    $("previewMovie").hidden = true;
+    $("previewMovie").replaceChildren();
+    $("previewInspect").hidden = true;
+    $("previewRevisions").hidden = true;
     return;
   }
   empty.hidden = true;
@@ -3172,6 +3378,11 @@ function renderPreview() {
   starRow.hidden = !(item.stars && item.stars.length);
   $("favoriteBtn").textContent = item.favorite ? "Unfavorite" : "Favorite";
   $("thumbBtn").hidden = item.kind !== "video";
+  $("movieBtn").hidden = !(item.kind === "video" || item.kind === "document");
+  $("movieBtn").title = item.movie ? "Update the IMDb details saved for this file" : "Look up this file on IMDb";
+  const viewable = Boolean(item.viewer);
+  $("modelBtn").hidden = !viewable;
+  $("cadBtn").hidden = !(item.family === "cad" || (item.family === "model" && !viewable));
   $("restoreBtn").hidden = !item.hidden;
   $("completeBtn").hidden = !(item.part_of && item.part_of.count > 1);
   const link = $("tgLink");
@@ -3183,6 +3394,9 @@ function renderPreview() {
     link.removeAttribute("href");
   }
   setPreviewNote(item.note, false);
+  renderMoviePanel(item);
+  renderInspectBlock(item);
+  loadRevisions(item, token);
   media.replaceChildren();
   renderInlinePreview(media, item, token);
 }
@@ -3191,6 +3405,10 @@ function renderFolderPreview(folder) {
   $("folderActions").hidden = false;
   $("fileMore").hidden = true;
   $("folderMore").hidden = false;
+  $("previewMovie").hidden = true;
+  $("previewMovie").replaceChildren();
+  $("previewInspect").hidden = true;
+  $("previewRevisions").hidden = true;
   $("previewStars").hidden = true;
   $("previewStars").replaceChildren();
   $("previewName").textContent = folder.name || folder.folder;
@@ -3320,6 +3538,9 @@ function updateViewerBar() {
 }
 function openViewerFor(item) {
   if (!item) return;
+  if (item.viewer) { openModelViewer(item); return; }
+  if (item.family === "cad" || item.family === "model") { openExternalItem(item); return; }
+  stopHoverPreview();
   VIEWER.list = buildViewerList(item);
   VIEWER.index = Math.max(0, VIEWER.list.findIndex((entry) => entry.id === item.id));
   // The overlay must be visible before the player is built, or Video.js
@@ -4300,6 +4521,237 @@ async function promptStars(item) {
   search.focus();
 }
 
+/* ------------------------------------------------------------------ movies */
+function movieRuntime(seconds) {
+  const total = Math.round(Number(seconds) || 0);
+  if (!total) return "";
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.round((total % 3600) / 60);
+  return hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+function movieVotes(count) {
+  const value = Number(count) || 0;
+  if (value >= 1000000) return `${(value / 1000000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (value >= 1000) return `${Math.round(value / 1000)}K`;
+  return value ? String(value) : "";
+}
+function renderMoviePanel(item) {
+  const panel = $("previewMovie");
+  panel.replaceChildren();
+  const movie = item && item.movie;
+  if (!movie || !movie.title) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  const head = h("div", { class: "movie-head" });
+  if (item.movie_poster_url) {
+    head.append(h("div", { class: "movie-poster" }, h("img", { src: item.movie_poster_url, alt: "", loading: "lazy" })));
+  }
+  const facts = [];
+  if (movie.rating) facts.push(`★ ${Number(movie.rating).toFixed(1)}`);
+  if (movie.votes) facts.push(`${movieVotes(movie.votes)} votes`);
+  const runtime = movieRuntime(movie.runtime);
+  if (runtime) facts.push(runtime);
+  if (movie.year) facts.push(String(movie.year));
+  const genres = (movie.genres || []).filter(Boolean);
+  head.append(h("div", { class: "movie-title-block" },
+    h("div", { class: "movie-title", text: movie.title, title: movie.title }),
+    facts.length ? h("div", { class: "movie-facts", text: facts.join(" · ") }) : null,
+    genres.length
+      ? h("div", { class: "movie-genres" }, ...genres.map((genre) => h("span", { class: "movie-genre", text: genre })))
+      : null
+  ));
+  const credits = h("dl", { class: "movie-credits" });
+  const addCredit = (label, people) => {
+    const names = (people || []).map((person) => person.name).filter(Boolean);
+    if (names.length) credits.append(h("dt", { text: label }), h("dd", { text: names.join(", ") }));
+  };
+  addCredit("Director", movie.directors);
+  addCredit("Writers", movie.writers);
+  if ((movie.countries || []).length) credits.append(h("dt", { text: "Country" }), h("dd", { text: movie.countries.join(", ") }));
+  if ((movie.languages || []).length) credits.append(h("dt", { text: "Language" }), h("dd", { text: movie.languages.join(", ") }));
+  const starByName = new Map();
+  for (const star of item.stars || []) starByName.set(String(star.name || "").toLowerCase(), star);
+  let cast = null;
+  const castList = (movie.cast || []).filter((person) => person && person.name);
+  if (castList.length) {
+    cast = h("div", {},
+      h("div", { class: "movie-cast-label", text: "Cast" }),
+      h("div", { class: "movie-cast" }, ...castList.slice(0, 20).map((person) => {
+        const star = starByName.get(String(person.name).toLowerCase());
+        const chip = h(star ? "button" : "span", {
+          class: "movie-cast-chip" + (star ? " linked" : ""),
+          type: star ? "button" : null,
+          title: star ? `Open ${person.name}` : (person.character ? `${person.name} as ${person.character}` : person.name)
+        },
+          h("span", { class: "movie-cast-name", text: person.name }),
+          person.character ? h("small", { text: person.character }) : null
+        );
+        if (star) chip.addEventListener("click", (event) => {
+          event.preventDefault();
+          openStar(Number(star.id));
+        });
+        return chip;
+      }))
+    );
+  }
+  const link = movie.url || `https://www.imdb.com/title/${movie.id}/`;
+  const foot = h("div", { class: "movie-foot" },
+    h("a", { class: "movie-source", href: link, target: "_blank", rel: "noopener noreferrer", title: "Open this title on IMDb" },
+      "IMDb", iconNode("external", "movie-source-icon")),
+    h("span", { text: "Details from IMDb" }),
+    h("span", { class: "movie-foot-spacer" }),
+    btn("Change…", "link-btn", () => promptMovie(item)),
+    h("span", { text: "·" }),
+    btn("Remove", "link-btn danger", () => clearMovieDetails(item))
+  );
+  panel.append(head);
+  if (credits.childElementCount) panel.append(credits);
+  if (cast) panel.append(cast);
+  if (movie.plot) panel.append(h("p", { class: "movie-plot", text: movie.plot }));
+  panel.append(foot);
+}
+async function clearMovieDetails(item) {
+  if (!item) return;
+  closeModal();
+  try {
+    await api(`/api/items/${item.id}/movie`, { method: "DELETE" });
+    toast("IMDb details removed.", "success");
+    await loadItems({ reset: true });
+    if (S.items.some((entry) => entry.id === item.id)) selectItem(item.id);
+    else renderPreview();
+  } catch (error) { toast(error.message, "error"); }
+}
+function promptMovie(item) {
+  if (!item) return;
+  let selected = null;
+  const searchInput = inputEl({ type: "search", placeholder: "Movie name", maxlength: "120", autocomplete: "off" });
+  if (item.movie && item.movie.title) searchInput.value = item.movie.title;
+  const searchButton = btn("Search", "btn", () => runSearch(searchInput.value));
+  const status = h("p", { class: "movie-search-status", text: "" });
+  const results = h("div", { class: "movie-results" });
+  const addCast = inputEl({ type: "checkbox" });
+  addCast.checked = true;
+  const castRow = h("label", { class: "check" }, addCast,
+    h("span", {},
+      h("strong", { text: "Add the cast to Stars" }),
+      h("small", { text: "Creates a star for each cast member that is missing and links them to this file." })
+    )
+  );
+  const renderResults = (list) => {
+    results.replaceChildren();
+    if (!list.length) {
+      results.append(h("p", { class: "modal-note", text: "No titles match. Try another name." }));
+      return;
+    }
+    for (const result of list) {
+      const chosen = selected && selected.id === result.id;
+      const poster = h("span", { class: "movie-result-poster" });
+      if (result.poster_url) poster.append(h("img", { src: result.poster_url, alt: "", loading: "lazy" }));
+      else poster.append(iconNode("video"));
+      const year = result.year ? ` (${result.year})` : "";
+      const row = h("button", { class: "movie-result" + (chosen ? " selected" : ""), type: "button" },
+        poster,
+        h("span", { class: "movie-result-body" },
+          h("span", { class: "movie-result-title" }, result.title, year ? h("em", { text: year }) : null),
+          h("span", { class: "movie-result-meta", text: [result.type, result.stars].filter(Boolean).join(" · ") || "IMDb title" })
+        ),
+        h("span", { class: "movie-result-check", html: chosen ? svgRaw("check") : "" })
+      );
+      row.addEventListener("click", () => {
+        selected = result;
+        renderResults(list);
+        status.textContent = `${result.title}${year} selected.`;
+      });
+      results.append(row);
+    }
+  };
+  const runSearch = async (query) => {
+    status.textContent = "Searching IMDb…";
+    results.replaceChildren();
+    searchButton.disabled = true;
+    try {
+      const data = await api(`/api/items/${item.id}/movie/search`, {
+        method: "POST",
+        body: { query: typeof query === "string" ? query.trim() : "" }
+      });
+      if (!searchInput.value.trim() && data.query) searchInput.value = data.query;
+      selected = null;
+      const list = data.results || [];
+      renderResults(list);
+      status.textContent = list.length
+        ? `${plural(list.length, "result")} from IMDb${data.year ? ` · the file name suggests ${data.year}` : ""}.`
+        : "No titles match. Try a shorter name.";
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      searchButton.disabled = false;
+    }
+  };
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); runSearch(searchInput.value); }
+  });
+  const content = h("div", {},
+    item.movie && item.movie.title
+      ? h("div", { class: "movie-current" },
+          h("span", { text: `Saved: ${item.movie.title}${item.movie.year ? ` (${item.movie.year})` : ""}` }),
+          btn("Remove", "link-btn danger", () => clearMovieDetails(item)))
+      : null,
+    h("div", { class: "movie-search-row" }, searchInput, searchButton),
+    status,
+    results,
+    castRow,
+    h("p", { class: "modal-note", text: "Search and details come from IMDb. The poster, plot, rating, cast and crew are saved in this library and shown in the details pane." })
+  );
+  openModal({
+    title: item.movie ? "Update IMDb details" : "Add IMDb details",
+    subtitle: item.name,
+    wide: true,
+    content,
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Save details",
+        class: "primary",
+        onClick: async (setBusy) => {
+          if (!selected) { toast("Choose an IMDb title first.", "error"); return; }
+          setBusy(true);
+          status.textContent = `Saving ${selected.title}…`;
+          try {
+            const data = await api(`/api/items/${item.id}/movie`, {
+              method: "POST",
+              body: { imdb_id: selected.id, add_cast: addCast.checked }
+            });
+            closeModal();
+            const movie = data.movie || {};
+            let message = `Added IMDb details for ${movie.title || selected.title}.`;
+            if (data.cast_linked) {
+              message += ` ${data.cast_linked} cast linked to Stars`;
+              if (data.cast_created) message += ` (${data.cast_created} new)`;
+              message += ".";
+            }
+            toast(message, "success", 7000);
+            await Promise.all([loadNav(), loadItems({ reset: true })]);
+            if (S.items.some((entry) => entry.id === item.id)) selectItem(item.id);
+            if (S.navMode === "stars") {
+              if (S.starId) loadStarInfo(S.starId);
+              else loadStars();
+            }
+          } catch (error) {
+            status.textContent = error.message;
+            toast(error.message, "error", 8000);
+          } finally {
+            setBusy(false);
+          }
+        }
+      }
+    ]
+  });
+  runSearch(searchInput.value);
+  searchInput.focus();
+}
+
 /* ------------------------------------------------------------ bulk select */
 function bulkIds() {
   return Array.from(S.selection);
@@ -4714,6 +5166,666 @@ function promptNote(item) {
     ]
   });
   area.focus();
+}
+/* -------------------------------------------- collections, views and tags */
+function collectionById(id) {
+  return (S.nav.collections || []).find((entry) => Number(entry.id) === Number(id)) || null;
+}
+function promptNewCollection(afterCreate) {
+  const input = inputEl({ type: "text", maxlength: "80", placeholder: "For example: Client work", autocomplete: "off" });
+  openModal({
+    title: "New collection",
+    subtitle: "Group files across folders",
+    content: h("div", {},
+      field("Name", input, "A file can be in several collections. Folders still decide where a file lives."),
+      h("p", { class: "modal-note", text: "Collections are part of the local library index and travel with the vault snapshot." })
+    ),
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Create",
+        class: "primary",
+        onClick: async () => {
+          try {
+            const data = await api("/api/collections", { method: "POST", body: { name: input.value } });
+            closeModal();
+            await loadNav();
+            toast(`Collection “${data.collection.name}” created.`, "success");
+            if (afterCreate) await afterCreate(data.collection);
+          } catch (error) { toast(error.message, "error"); }
+        }
+      }
+    ]
+  });
+  input.focus();
+}
+function promptRenameCollection(collection) {
+  const input = inputEl({ type: "text", value: collection.name, maxlength: "80", autocomplete: "off" });
+  openModal({
+    title: "Rename collection",
+    content: field("Name", input),
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Rename",
+        class: "primary",
+        onClick: async () => {
+          const name = input.value.trim();
+          if (!name) { toast("Give the collection a name.", "error"); return; }
+          try {
+            await api(`/api/collections/${collection.id}`, { method: "PATCH", body: { name } });
+            closeModal();
+            await loadNav();
+            if (S.collection === collection.id) updateBreadcrumb();
+            toast("Collection renamed.", "success");
+          } catch (error) { toast(error.message, "error"); }
+        }
+      }
+    ]
+  });
+  input.focus();
+  input.select();
+}
+function promptDeleteCollection(collection) {
+  openModal({
+    title: "Delete collection?",
+    subtitle: collection.name,
+    content: h("p", { text: `The collection and its ${plural(collection.n || 0, "file link")} are removed. The files stay in the library.` }),
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Delete",
+        class: "danger",
+        onClick: async () => {
+          try {
+            await api(`/api/collections/${collection.id}`, { method: "DELETE" });
+            closeModal();
+            const wasOpen = S.collection === collection.id;
+            if (wasOpen) {
+              S.collection = null;
+              S.navMode = "all";
+              S.history = S.history.filter((snap) => snap.collection !== collection.id);
+              S.histIndex = Math.max(0, S.history.length - 1);
+            }
+            await loadNav();
+            if (wasOpen) navigateScope({ navMode: "all", folder: "", tag: "", kind: "" });
+            toast("Collection deleted.", "success");
+          } catch (error) { toast(error.message, "error"); }
+        }
+      }
+    ]
+  });
+}
+async function promptCollections(item) {
+  const ids = item ? [item.id] : Array.from(S.selection);
+  if (!ids.length) { toast("Select files first.", "error"); return; }
+  let collections = [];
+  let mine = [];
+  try {
+    if (item) {
+      const fresh = await api(`/api/items/${item.id}`);
+      mine = fresh.collections || [];
+    }
+    collections = (await api("/api/collections")).collections || [];
+  } catch (error) { toast(error.message, "error"); return; }
+  const boxes = new Map();
+  const list = h("div", { class: "check-list" });
+  const render = () => {
+    list.replaceChildren();
+    if (!collections.length) {
+      list.append(h("p", { class: "modal-note", text: "No collections yet. Create one below." }));
+      return;
+    }
+    for (const collection of collections) {
+      const box = h("input", { type: "checkbox" });
+      box.checked = mine.includes(collection.id);
+      boxes.set(collection.id, box);
+      list.append(h("label", { class: "check-row" }, box,
+        h("span", { class: "check-label", text: collection.name }),
+        h("span", { class: "check-count", text: plural(collection.n || 0, "file") })
+      ));
+    }
+  };
+  render();
+  const newName = inputEl({ type: "text", maxlength: "80", placeholder: "New collection name", autocomplete: "off" });
+  const createBtn = btn("Create and add", "btn", async () => {
+    try {
+      const data = await api("/api/collections", { method: "POST", body: { name: newName.value } });
+      collections = collections.concat([data.collection]);
+      mine = mine.concat([data.collection.id]);
+      newName.value = "";
+      render();
+      toast(`Collection “${data.collection.name}” created.`, "success");
+    } catch (error) { toast(error.message, "error"); }
+  });
+  openModal({
+    title: item ? "Collections for this file" : "Add files to a collection",
+    subtitle: item ? item.name : plural(ids.length, "selected file"),
+    content: h("div", {}, list,
+      h("div", { class: "inline-create" }, newName, createBtn),
+      h("p", { class: "modal-note", text: item
+        ? "Tick the collections this file belongs to. Unticking removes it from that collection."
+        : "Selected files are added to every ticked collection. Use the file’s own menu to remove it later." })
+    ),
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: item ? "Save" : "Add",
+        class: "primary",
+        onClick: async () => {
+          try {
+            for (const collection of collections) {
+              const box = boxes.get(collection.id);
+              if (!box) continue;
+              const want = box.checked;
+              const has = mine.includes(collection.id);
+              if (want === has) continue;
+              await api(`/api/collections/${collection.id}/items`, {
+                method: "POST",
+                body: { item_ids: ids, remove: !want }
+              });
+            }
+            closeModal();
+            await loadNav();
+            toast(item ? "Collections updated." : `Added to collection.`, "success");
+          } catch (error) { toast(error.message, "error"); }
+        }
+      }
+    ]
+  });
+  newName.focus();
+  newName.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    createBtn.click();
+  });
+}
+function currentViewData() {
+  return {
+    navMode: S.navMode, folder: S.folder, tag: S.tag, kind: S.kind,
+    starId: S.starId, collection: S.collection, watching: S.watching,
+    sort: S.sort, dir: S.dir, filters: { ...S.filters }
+  };
+}
+function promptSaveView() {
+  const parts = [S.navMode === "collection" ? (collectionById(S.collection)?.name || "Collection") : ""];
+  if (S.folder) parts.push(S.folder);
+  if (S.tag) parts.push(`#${S.tag}`);
+  const input = inputEl({
+    type: "text", maxlength: "80", autocomplete: "off",
+    value: parts.filter(Boolean).join(" · ") || "My view"
+  });
+  openModal({
+    title: "Save this view",
+    subtitle: "Reuse the same folder, type, tag, search and filters later",
+    content: h("div", {},
+      field("View name", input),
+      h("p", { class: "modal-note", text: "The current search text is not stored; everything else in the filter bar is." })
+    ),
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Save view",
+        class: "primary",
+        onClick: async () => {
+          try {
+            await api("/api/saved-views", {
+              method: "POST",
+              body: { name: input.value, data: currentViewData() }
+            });
+            closeModal();
+            await loadNav();
+            toast("View saved.", "success");
+          } catch (error) { toast(error.message, "error"); }
+        }
+      }
+    ]
+  });
+  input.focus();
+  input.select();
+}
+function applySavedView(view) {
+  const data = view.data || {};
+  S.filters = filterStateFrom(data.filters || {});
+  try { localStorage.setItem("tfe_filters", JSON.stringify(S.filters)); } catch (_) { /* best effort */ }
+  savePrefs({ filters: S.filters });
+  updateFilterBadge();
+  navigateScope({
+    navMode: data.navMode || "all",
+    folder: data.folder || "",
+    tag: data.tag || "",
+    kind: data.kind || "",
+    starId: data.starId || null,
+    collection: data.collection || null,
+    watching: Boolean(data.watching),
+    sort: data.sort || S.sort,
+    dir: data.dir || S.dir
+  });
+}
+function deleteSavedView(view) {
+  openModal({
+    title: "Delete saved view?",
+    subtitle: view.name,
+    content: h("p", { text: "The view is removed from the sidebar. Files are not changed." }),
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Delete",
+        class: "danger",
+        onClick: async () => {
+          try {
+            await api(`/api/saved-views/${view.id}`, { method: "DELETE" });
+            closeModal();
+            await loadNav();
+            toast("View deleted.", "success");
+          } catch (error) { toast(error.message, "error"); }
+        }
+      }
+    ]
+  });
+}
+const TAG_COLORS = ["", "#229ED9", "#7c5cff", "#e0457b", "#f0a020", "#27ae60", "#8e44ad", "#e74c3c", "#0ca678", "#6b7280"];
+function promptTagMeta(tag, onSaved) {
+  const source = tag || { tag: "", color: "", group: "" };
+  let color = source.color || "";
+  const nameInput = inputEl({ type: "text", value: source.tag || "", maxlength: "80", placeholder: "Tag name", autocomplete: "off" });
+  if (source.tag) nameInput.readOnly = true;
+  const groupInput = inputEl({ type: "text", value: source.group || "", maxlength: "60", placeholder: "Optional group", autocomplete: "off" });
+  const swatches = h("div", { class: "swatch-row" });
+  const paint = () => {
+    swatches.replaceChildren();
+    for (const value of TAG_COLORS) {
+      const dot = h("button", {
+        class: "swatch" + (value === color ? " active" : "") + (value ? "" : " none"),
+        type: "button",
+        title: value || "No colour",
+        style: value ? `--swatch:${value}` : ""
+      });
+      dot.addEventListener("click", () => { color = value; paint(); });
+      swatches.append(dot);
+    }
+  };
+  paint();
+  openModal({
+    title: "Tag colour and group",
+    content: h("div", {},
+      field("Tag", nameInput, "Tag names follow the file’s tags."),
+      field("Colour", swatches),
+      field("Group", groupInput, "Groups keep related tags together in the tag manager.")
+    ),
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Save",
+        class: "primary",
+        onClick: async () => {
+          try {
+            await api("/api/tags/meta", {
+              method: "POST",
+              body: { tag: nameInput.value.trim(), color, group: groupInput.value.trim() }
+            });
+            closeModal();
+            await loadNav();
+            if (onSaved) onSaved();
+            toast("Tag saved.", "success");
+          } catch (error) { toast(error.message, "error"); }
+        }
+      }
+    ]
+  });
+  if (!source.tag) nameInput.focus();
+}
+function promptTagManager() {
+  const tags = S.nav.tags || [];
+  const list = h("div", { class: "check-list" });
+  if (!tags.length) {
+    list.append(h("p", { class: "modal-note", text: "No tags yet. Edit a file’s tags first." }));
+  } else {
+    for (const tag of tags) {
+      const dot = h("i", { class: "tag-dot", style: tag.color ? `background:${tag.color}` : "" });
+      const row = h("button", { class: "tag-manage-row", type: "button", title: `Edit #${tag.tag}` },
+        dot,
+        h("span", { class: "tag-manage-name", text: `#${tag.tag}` }),
+        h("span", { class: "tag-manage-group", text: tag.group || "" }),
+        h("span", { class: "nav-count", text: String(tag.count || 0) })
+      );
+      row.addEventListener("click", () => promptTagMeta(tag, () => promptTagManager()));
+      list.append(row);
+    }
+  }
+  openModal({
+    title: "Tag colours and groups",
+    subtitle: "Right-click a tag in the sidebar to edit it directly",
+    wide: true,
+    content: h("div", {}, list,
+      h("div", { class: "inline-create" },
+        btn("New tag…", "btn", () => promptTagMeta(null, () => promptTagManager()))
+      )
+    ),
+    actions: [{ label: "Close", onClick: closeModal }]
+  });
+}
+
+/* ---------------------------------------------------- batch rename/report */
+function promptBatchRename() {
+  const ids = Array.from(S.selection);
+  if (!ids.length) { toast("Select files first.", "error"); return; }
+  const input = inputEl({ type: "text", value: "{name}", maxlength: "160", autocomplete: "off" });
+  const preview = h("div", { class: "batch-preview" }, h("p", { class: "modal-note", text: "Reading names…" }));
+  const run = debounce(async () => {
+    try {
+      const data = await api("/api/batch/rename", {
+        method: "POST",
+        body: { item_ids: ids, template: input.value, preview: true }
+      });
+      const changed = data.renames.filter((entry) => entry.from !== entry.to);
+      preview.replaceChildren();
+      if (!changed.length) {
+        preview.append(h("p", { class: "modal-note", text: "This template keeps the current names." }));
+        return;
+      }
+      for (const entry of changed.slice(0, 200)) {
+        preview.append(h("div", { class: "batch-row" },
+          h("span", { class: "batch-from", text: entry.from, title: entry.from }),
+          h("span", { class: "batch-arrow", text: "→" }),
+          h("span", { class: "batch-to", text: entry.to, title: entry.to })
+        ));
+      }
+    } catch (error) {
+      preview.replaceChildren(h("p", { class: "modal-note", text: error.message }));
+    }
+  }, 260);
+  input.addEventListener("input", run);
+  const chips = h("div", { class: "template-chips" });
+  for (const token of ["{name}", "{ext}", "{folder}", "{date}", "{nn}"]) {
+    const chip = btn(token, "tag-chip", () => {
+      const start = input.selectionStart ?? input.value.length;
+      const end = input.selectionEnd ?? start;
+      input.value = input.value.slice(0, start) + token + input.value.slice(end);
+      input.focus();
+      input.setSelectionRange(start + token.length, start + token.length);
+      run();
+    });
+    chips.append(chip);
+  }
+  openModal({
+    title: "Rename selected files",
+    subtitle: plural(ids.length, "file"),
+    wide: true,
+    content: h("div", {},
+      field("Name template", input, "Placeholders: {name} {ext} {kind} {folder} {date} {n} {nn}. The original extension is appended when {ext} is missing."),
+      chips,
+      preview
+    ),
+    actions: [
+      { label: "Cancel", onClick: closeModal },
+      {
+        label: "Rename",
+        class: "primary",
+        onClick: async () => {
+          try {
+            const data = await api("/api/batch/rename", {
+              method: "POST",
+              body: { item_ids: ids, template: input.value, preview: false }
+            });
+            closeModal();
+            toast(data.applied ? `${plural(data.applied, "file")} renamed.` : "Names already match.", "success");
+            if (data.warnings) toast(`${data.warnings} Telegram caption(s) could not be updated.`, "info", 7000);
+            S.selection.clear();
+            await Promise.all([loadNav(), loadItems({ reset: true })]);
+            renderSelection();
+          } catch (error) { toast(error.message, "error"); }
+        }
+      }
+    ]
+  });
+  run();
+  input.focus();
+}
+async function promptDuplicates() {
+  let report;
+  try {
+    report = await api("/api/reports/duplicates?limit=100");
+  } catch (error) { toast(error.message, "error"); return; }
+  const content = h("div", { class: "report" });
+  if (!report.groups.length) {
+    content.append(h("p", { text: "No files share the same name and size in this vault." }));
+  }
+  const reload = async () => {
+    try { await Promise.all([loadNav(), loadItems({ reset: true })]); } catch (_) { /* best effort */ }
+  };
+  for (const group of report.groups) {
+    const rows = h("div", { class: "dupe-items" });
+    for (const entry of group.items) {
+      const reveal = btn("Reveal", "link-btn", () => {
+        closeModal();
+        navigateScope({ navMode: "all", q: entry.name, folder: "", tag: "", kind: "" });
+      });
+      const remove = btn("Remove", "link-btn danger", async () => {
+        remove.disabled = true;
+        try {
+          await api(`/api/items/${entry.id}?remote=0`, { method: "DELETE" });
+          toast("Removed from the library. Restore it from Hidden if needed.", "success", 5000);
+          await reload();
+          promptDuplicates();
+        } catch (error) {
+          remove.disabled = false;
+          toast(error.message, "error");
+        }
+      });
+      rows.append(h("div", { class: "dupe-row" },
+        h("span", { class: "dupe-name", text: entry.name, title: entry.name }),
+        h("span", { class: "dupe-meta", text: `${entry.folder || "—"} · ${fmtDate(entry.tg_date || entry.added_at, true)}` }),
+        reveal, remove
+      ));
+    }
+    content.append(h("div", { class: "dupe-group" },
+      h("div", { class: "dupe-head" },
+        h("strong", { text: group.name }),
+        h("span", { class: "dupe-meta", text: `${group.count} ${group.count === 1 ? "copy" : "copies"} · ${fmtSize(group.size)} each` })
+      ),
+      rows
+    ));
+  }
+  openModal({
+    title: "Duplicate files",
+    subtitle: `${plural(report.group_count, "group")} · about ${fmtSize(report.wasted)} could be freed`,
+    wide: true,
+    content: h("div", {}, content,
+      h("p", { class: "modal-note", text: "Duplicates are matched by name and size. Removing only hides the entry in this library; the Telegram message stays unless you delete it from the file menu." })
+    ),
+    actions: [{ label: "Close", onClick: closeModal }, { label: "Rescan", onClick: () => promptDuplicates() }]
+  });
+}
+async function promptStorage() {
+  let report;
+  try {
+    report = await api("/api/reports/stats");
+  } catch (error) { toast(error.message, "error"); return; }
+  const kinds = report.kinds || [];
+  const maxSize = Math.max(1, ...kinds.map((entry) => entry.size || 0));
+  const bars = h("div", { class: "storage-kinds" });
+  for (const entry of kinds) {
+    bars.append(h("div", { class: "storage-kind" },
+      h("span", { class: "storage-kind-label", text: entry.label }),
+      h("span", { class: "storage-track" }, h("i", { style: `width:${Math.max(2, (entry.size / maxSize) * 100)}%` })),
+      h("span", { class: "storage-kind-value", text: `${plural(entry.count, "file")} · ${fmtSize(entry.size)}` })
+    ));
+  }
+  if (!kinds.length) bars.append(h("p", { class: "modal-note", text: "No files indexed yet." }));
+  const largest = h("div", { class: "check-list" });
+  for (const entry of report.largest || []) {
+    const row = h("button", { class: "tag-manage-row", type: "button", title: entry.name },
+      h("span", { class: "tag-manage-name", text: entry.name }),
+      h("span", { class: "tag-manage-group", text: entry.folder || "" }),
+      h("span", { class: "nav-count", text: fmtSize(entry.size) })
+    );
+    row.addEventListener("click", () => {
+      closeModal();
+      navigateScope({ navMode: "all", q: entry.name, folder: "", tag: "", kind: "" });
+    });
+    largest.append(row);
+  }
+  openModal({
+    title: "Storage report",
+    subtitle: `${plural(kinds.reduce((sum, entry) => sum + entry.count, 0), "file")} · ${fmtSize(kinds.reduce((sum, entry) => sum + entry.size, 0))}`,
+    wide: true,
+    content: h("div", {},
+      bars,
+      h("div", { class: "report-split" },
+        h("div", { class: "report-pill" }, h("strong", { text: String(report.collections || 0) }), h("span", { text: "Collections" })),
+        h("div", { class: "report-pill" }, h("strong", { text: String(report.views || 0) }), h("span", { text: "Saved views" }))
+      ),
+      h("div", { class: "preview-note-head" }, h("span", { text: "Largest files" })),
+      largest,
+      h("p", { class: "modal-note", text: "Sizes are the Telegram file sizes in this vault. Open a file to download or remove it from the library." })
+    ),
+    actions: [{ label: "Close", onClick: closeModal }]
+  });
+}
+
+/* --------------------------------------------------------- details/revisions */
+function renderInspectBlock(item) {
+  const block = $("previewInspect");
+  const dl = $("previewInspectFields");
+  const note = $("previewInspectNote");
+  dl.replaceChildren();
+  const meta = item && item.meta;
+  const fields = meta && Array.isArray(meta.fields) ? meta.fields : [];
+  const text = meta && meta.note ? String(meta.note) : "";
+  if (!fields.length && !text) {
+    block.hidden = true;
+    note.hidden = true;
+    note.textContent = "";
+    $("inspectBtn").textContent = "Read";
+    return;
+  }
+  for (const pair of fields) {
+    if (!Array.isArray(pair) || pair.length < 2) continue;
+    dl.append(h("dt", { text: pair[0] }), h("dd", { text: pair[1] }));
+  }
+  note.hidden = !text;
+  note.textContent = text;
+  block.hidden = false;
+  $("inspectBtn").textContent = "Read again";
+}
+async function inspectItem(item) {
+  if (!item) return;
+  const button = $("inspectBtn");
+  button.textContent = "Reading…";
+  try {
+    const data = await api(`/api/items/${item.id}/inspect`, { method: "POST", body: {} });
+    const index = S.items.findIndex((entry) => entry.id === item.id);
+    if (index >= 0) S.items[index] = data.item;
+    if (S.selectedId === item.id) {
+      renderPreview();
+    } else {
+      renderInspectBlock(data.item);
+    }
+    toast("File details read.", "success");
+  } catch (error) {
+    button.textContent = "Read";
+    toast(error.message, "error");
+  }
+}
+function inspectLink() {
+  const item = selectedItem();
+  if (!item) return;
+  inspectItem(item);
+}
+async function loadRevisions(item, token) {
+  const block = $("previewRevisions");
+  const list = $("revisionList");
+  block.hidden = true;
+  list.replaceChildren();
+  if (!item || !(item.family === "model" || item.family === "cad")) return;
+  try {
+    const data = await api(`/api/items/${item.id}/revisions`);
+    if (token !== S.previewToken) return;
+    if (!data.items || !data.items.length) return;
+    for (const entry of data.items) {
+      const row = h("button", { class: "revision-item", type: "button", title: entry.name },
+        h("span", { class: "revision-name", text: entry.name }),
+        h("span", { class: "revision-date", text: fmtDate(entry.tg_date || entry.added_at, true) })
+      );
+      row.addEventListener("click", () => {
+        const found = S.items.find((candidate) => candidate.id === entry.id);
+        if (found) selectItem(found.id, { scroll: true });
+        else openViewerFor(entry);
+      });
+      list.append(row);
+    }
+    block.hidden = false;
+  } catch (_) {
+    block.hidden = true;
+  }
+}
+function openModelViewer(item) {
+  if (!item) return;
+  if (!item.viewer || !window.TFE3D) {
+    toast("This model has no built-in preview. Use Open in app instead.", "error");
+    return;
+  }
+  window.TFE3D.open(item);
+}
+async function openExternalItem(item) {
+  if (!item) return;
+  toast("Opening in its Windows app…", "info", 4000);
+  try {
+    await api(`/api/items/${item.id}/open-external`, { method: "POST", body: {} });
+  } catch (error) { toast(error.message, "error"); }
+}
+async function windowsThumbnail(item) {
+  if (!item) return;
+  toast("Asking Windows for a preview…", "info", 5000);
+  try {
+    const data = await api(`/api/items/${item.id}/thumb/windows`, { method: "POST", body: {} });
+    window.__tfeThumbUpdated(data.item);
+  } catch (error) { toast(error.message, "error"); }
+}
+window.__tfeThumbUpdated = function (item) {
+  if (!item) return;
+  const index = S.items.findIndex((entry) => entry.id === item.id);
+  if (index >= 0) S.items[index] = item;
+  if (S.view === "tiles") {
+    renderItems();
+  } else {
+    const thumb = document.querySelector(`.row[data-id="${item.id}"] .thumb`);
+    if (thumb) {
+      thumb.replaceChildren();
+      if (item.thumb_url) thumb.append(h("img", { src: item.thumb_url, alt: "", loading: "lazy" }));
+      else thumb.append(fileIcon(item.kind));
+    }
+  }
+  if (S.selectedId === item.id) renderPreview();
+  toast("Thumbnail updated.", "success");
+};
+
+/* --------------------------------------------------------------- shortcuts */
+const SHORTCUTS = [
+  ["F2", "Rename file or folder"],
+  ["Delete", "Delete file or empty folder"],
+  ["Enter / Space", "Open file or folder"],
+  ["↑ / ↓", "Move selection"],
+  ["Ctrl F", "Search"],
+  ["Ctrl A", "Select all files in this view"],
+  ["Alt ← / →", "Back / forward"],
+  ["?", "Show this list"],
+  ["Esc", "Close dialog or player"]
+];
+function shortcutGridNode() {
+  const grid = h("div", { class: "shortcut-grid" });
+  for (const [key, label] of SHORTCUTS) grid.append(h("kbd", { text: key }), h("span", { text: label }));
+  return grid;
+}
+function promptShortcuts() {
+  openModal({
+    title: "Keyboard shortcuts",
+    content: h("div", {}, shortcutGridNode(),
+      h("p", { class: "modal-note", text: "In the 3D viewer drag to orbit, scroll to zoom and right-drag to pan." })
+    ),
+    actions: [{ label: "Close", onClick: closeModal }]
+  });
 }
 function promptThumbPicker(item) {
   if (!item) return;
@@ -5248,25 +6360,25 @@ function promptSettings() {
       btn("Quit app", "btn", quitApp)
     )
   );
+  const sectionTools = h("div", { class: "settings-section" },
+    h("h3", { text: "Library tools" }),
+    h("div", { class: "settings-actions" },
+      btn("Duplicate files…", "btn", () => { closeModal(); promptDuplicates(); }),
+      btn("Storage report…", "btn", () => { closeModal(); promptStorage(); })
+    ),
+    h("p", { class: "modal-note", text: "Duplicates are matched by name and size. The storage report breaks the vault down by file type and lists the largest files." })
+  );
   const shortcuts = h("div", { class: "settings-section" },
     h("h3", { text: "Keyboard shortcuts" }),
-    h("div", { class: "shortcut-grid" },
-      h("kbd", { text: "F2" }), h("span", { text: "Rename file or folder" }),
-      h("kbd", { text: "Delete" }), h("span", { text: "Delete file or empty folder" }),
-      h("kbd", { text: "Enter / Space" }), h("span", { text: "Open file or folder" }),
-      h("kbd", { text: "↑ / ↓" }), h("span", { text: "Move selection" }),
-      h("kbd", { text: "Ctrl F" }), h("span", { text: "Search" }),
-      h("kbd", { text: "Alt ← / →" }), h("span", { text: "Back / forward" }),
-      h("kbd", { text: "Esc" }), h("span", { text: "Close dialog or player" })
-    )
+    shortcutGridNode()
   );
   const notes = h("div", { class: "settings-section" },
     h("h3", { text: "Good to know" }),
-    h("p", { class: "modal-note", text: "Files live in your private Telegram channel. Folders, tags, favorites and names are the local index; renaming also updates the Telegram caption." }),
+    h("p", { class: "modal-note", text: "Files live in your private Telegram channel. Folders, tags, favorites, collections and names are the local index; renaming also updates the Telegram caption." }),
     h("p", { class: "modal-note", text: "The Telegram session and library database are stored in your Windows profile (%APPDATA%\\TelegramFileExplorer). The bot token is never used here." }),
     h("p", { class: "modal-note", text: `Files above your Telegram account limit (${uploadLimitLabel()} per file) are split into archive parts automatically. Picking "Download complete file" on any part fetches all parts and joins them back into the original file. Deleting from Telegram removes the message from the channel.` })
   );
-  const content = h("div", {}, account, sectionAppearance, sectionSecurity, sectionChannel, sectionLibrary, sectionConnection, shortcuts, notes);
+  const content = h("div", {}, account, sectionAppearance, sectionSecurity, sectionChannel, sectionLibrary, sectionTools, sectionConnection, shortcuts, notes);
   openModal({
     title: "Settings and help",
     subtitle: "Account, appearance, channel, library and shortcuts",
@@ -5388,6 +6500,10 @@ function openItemMenu(event, item) {
   selectItem(item.id);
   const entries = [
     { label: "Open", icon: "play", key: "Enter", onClick: () => openViewerFor(item) },
+    item.viewer ? { label: "View 3D model", icon: "cube", onClick: () => openModelViewer(item) } : null,
+    item.family === "cad" || (item.family === "model" && !item.viewer)
+      ? { label: "Open in its Windows app", icon: "external", onClick: () => openExternalItem(item) }
+      : null,
     { label: "Download", icon: "download", onClick: () => downloadItem(item) },
     item.kind === "video"
       ? { label: "Choose thumbnail…", icon: "image", onClick: () => promptThumbPicker(item) }
@@ -5403,7 +6519,15 @@ function openItemMenu(event, item) {
     { label: "Rename…", icon: "edit", key: "F2", onClick: () => promptRename() },
     { label: "Move to folder…", icon: "move", onClick: () => promptMove() },
     { label: "Edit tags…", icon: "tag", onClick: () => promptTags() },
+    { label: "Add to collection…", icon: "layers", onClick: () => promptCollections(item) },
+    { label: "File details…", icon: "info", onClick: () => inspectItem(item) },
+    (item.family === "model" || item.family === "cad")
+      ? { label: "Use Windows thumbnail", icon: "image", onClick: () => windowsThumbnail(item) }
+      : null,
     { label: "Stars…", icon: "user", onClick: () => promptStars(item) },
+    (item.kind === "video" || item.kind === "document") && !item.part_of
+      ? { label: item.movie ? "Update IMDb details…" : "Add IMDb details…", icon: "video", onClick: () => promptMovie(item) }
+      : null,
     { label: item.note ? "Edit note…" : "Add note…", icon: "note", onClick: () => promptNote(item) },
     { label: item.favorite ? "Remove from favorites" : "Add to favorites", icon: "star", onClick: () => toggleFavorite(item) },
     { separator: true }
@@ -5806,6 +6930,7 @@ function bindEvents() {
   document.querySelectorAll("#nav .nav-item").forEach((node) => {
     node.addEventListener("click", () => {
       if (node.dataset.nav === "recent") navigateScope({ navMode: "recent", folder: "", tag: "", kind: "", sort: "added", dir: "desc" });
+      else if (node.dataset.nav === "continue") navigateScope({ navMode: "continue", folder: "", tag: "", kind: "", watching: true, sort: "date", dir: "desc" });
       else if (node.dataset.nav === "favorites") navigateScope({ navMode: "favorites", folder: "", tag: "", kind: "", sort: "date", dir: "desc" });
       else if (node.dataset.nav === "hidden") navigateScope({ navMode: "hidden", folder: "", tag: "", kind: "", sort: "date", dir: "desc" });
       else if (node.dataset.nav === "stars") navigateScope({ navMode: "stars", folder: "", tag: "", kind: "", q: "" });
@@ -5908,11 +7033,37 @@ function bindEvents() {
     if (event.target.closest(".tile-stars")) return;
     const tile = event.target.closest(".tile");
     if (!tile) return;
+    stopHoverPreview();
     if (tile.dataset.folder) { openFolder(tile.dataset.folder); return; }
     selectItem(Number(tile.dataset.id));
     const item = selectedItem();
     if (item) openViewerFor(item);
   });
+  $("tilesView").addEventListener("pointerover", (event) => {
+    const tile = event.target.closest(".tile");
+    if (!tile || tile === hoverTarget) return;
+    if (hoverTarget && hoverTarget.contains(event.target)) return;
+    stopHoverPreview();
+    if (tile.dataset.folder || S.view !== "tiles") return;
+    const item = S.items.find((entry) => entry.id === Number(tile.dataset.id));
+    if (!item) return;
+    if (isVideoLike(item)) {
+      hoverTarget = tile;
+      hoverTimer = setTimeout(() => {
+        hoverTimer = 0;
+        if (hoverTarget === tile) startHoverPreview(tile, item);
+      }, HOVER_PREVIEW_DELAY);
+    } else if (item.kind === "image" || item.kind === "sticker") {
+      startHoverPreview(tile, item);
+    }
+  });
+  $("tilesView").addEventListener("pointerout", (event) => {
+    if (!hoverTarget) return;
+    if (event.relatedTarget && hoverTarget.contains(event.relatedTarget)) return;
+    stopHoverPreview();
+  });
+  $("tilesView").addEventListener("pointercancel", stopHoverPreview);
+  window.addEventListener("blur", stopHoverPreview);
   $("tilesView").addEventListener("contextmenu", (event) => {
     const tile = event.target.closest(".tile");
     if (!tile) return;
@@ -5963,6 +7114,16 @@ function bindEvents() {
   $("starNewBtn").addEventListener("click", () => promptStarEditor(null));
   $("starsBtn").addEventListener("click", () => promptStars(selectedItem()));
   $("bulkStars").addEventListener("click", () => promptStars(null));
+  $("newCollectionBtn").addEventListener("click", () => promptNewCollection());
+  $("saveViewBtn").addEventListener("click", promptSaveView);
+  $("tagMetaBtn").addEventListener("click", promptTagManager);
+  $("bulkCollections").addEventListener("click", () => promptCollections(null));
+  $("bulkRename").addEventListener("click", promptBatchRename);
+  $("collectionsBtn").addEventListener("click", () => promptCollections(selectedItem()));
+  $("inspectLink").addEventListener("click", inspectLink);
+  $("inspectBtn").addEventListener("click", inspectLink);
+  $("modelBtn").addEventListener("click", () => openModelViewer(selectedItem()));
+  $("cadBtn").addEventListener("click", () => openExternalItem(selectedItem()));
   $("clearTagBtn").addEventListener("click", () => navigateScope({ navMode: "all", tag: "" }));
   $("newFolderBtn").addEventListener("click", () => promptNewFolder(S.folder));
   $("filterBtn").addEventListener("click", promptFilters);
@@ -6036,6 +7197,7 @@ function bindEvents() {
   $("openBtn").addEventListener("click", () => openViewerFor(selectedItem()));
   $("downloadBtn").addEventListener("click", () => downloadItem(selectedItem()));
   $("thumbBtn").addEventListener("click", () => promptThumbPicker(selectedItem()));
+  $("movieBtn").addEventListener("click", () => promptMovie(selectedItem()));
   $("completeBtn").addEventListener("click", () => startMergeDownload(selectedItem()));
   $("favoriteBtn").addEventListener("click", promptFavorite);
   $("restoreBtn").addEventListener("click", () => restoreItem(selectedItem()));
@@ -6075,6 +7237,7 @@ function bindEvents() {
     if (item) promptNote(item);
   });
   $("viewerClose").addEventListener("click", closeViewer);
+  $("viewerCloseFloat").addEventListener("click", closeViewer);
   $("viewerPrev").addEventListener("click", () => stepViewer(-1));
   $("viewerNext").addEventListener("click", () => stepViewer(1));
   $("viewerMpv").addEventListener("click", () => openInMpv(VIEWER.item));
@@ -6100,6 +7263,12 @@ function bindEvents() {
   });
   window.addEventListener("resize", hideContextMenu);
   $("content").addEventListener("scroll", hideContextMenu);
+  $("content").addEventListener("scroll", () => {
+    const node = $("content");
+    if (S.loading || S.itemsPending || isStarCatalogue()) return;
+    if (!S.total || S.items.length >= S.total) return;
+    if (node.scrollTop + node.clientHeight >= node.scrollHeight - 420) loadMore();
+  });
 
   let dragDepth = 0;
   document.addEventListener("dragenter", (event) => {
@@ -6209,6 +7378,11 @@ function handleKeydown(event) {
     event.preventDefault();
     $("searchInput").focus();
     $("searchInput").select();
+    return;
+  }
+  if (!event.ctrlKey && !event.altKey && !event.metaKey && event.key === "?") {
+    event.preventDefault();
+    promptShortcuts();
     return;
   }
   if (event.altKey && event.key === "ArrowLeft") { event.preventDefault(); goBack(); return; }

@@ -8,7 +8,7 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/vendor/videojs/video-js.min.css">
   <link rel="stylesheet" href="/static/vendor/viewerjs/viewer.min.css">
-  <link rel="stylesheet" href="/static/styles.css?v=6">
+  <link rel="stylesheet" href="/static/styles.css?v=11">
 </head>
 <body>
   <div class="app">
@@ -81,6 +81,11 @@
             <span class="nav-icon" data-icon="clock"></span>
             <span class="nav-label">Recent</span>
           </button>
+          <button class="nav-item" data-nav="continue">
+            <span class="nav-icon" data-icon="play"></span>
+            <span class="nav-label">Continue</span>
+            <span class="nav-count" id="countPlaying"></span>
+          </button>
           <button class="nav-item" data-nav="favorites">
             <span class="nav-icon" data-icon="star"></span>
             <span class="nav-label">Favorites</span>
@@ -108,8 +113,23 @@
         <div class="side-list" id="folderList"></div>
 
         <div class="side-heading">
+          <span>Collections</span>
+          <button class="mini-btn" id="newCollectionBtn" title="New collection">+</button>
+        </div>
+        <div class="side-list" id="collectionList"></div>
+
+        <div class="side-heading">
+          <span>Saved views</span>
+          <button class="mini-btn" id="saveViewBtn" title="Save the current filters as a view">+</button>
+        </div>
+        <div class="side-list" id="viewList"></div>
+
+        <div class="side-heading">
           <span>Tags</span>
-          <button class="mini-btn" id="clearTagBtn" title="Clear tag filter" hidden>×</button>
+          <span class="side-heading-actions">
+            <button class="mini-btn" id="tagMetaBtn" title="Tag colours and groups">⋯</button>
+            <button class="mini-btn" id="clearTagBtn" title="Clear tag filter" hidden>×</button>
+          </span>
         </div>
         <div class="tag-cloud" id="tagList"></div>
 
@@ -227,6 +247,8 @@
           <button class="btn" id="bulkDownload" title="Download the selected files as one ZIP">Download</button>
           <button class="btn" id="bulkFavorite" title="Add the selected files to favorites">Favorite</button>
           <button class="btn" id="bulkStars" title="Assign the selected files to stars">Stars</button>
+          <button class="btn" id="bulkCollections" title="Add the selected files to a collection">Collection</button>
+          <button class="btn" id="bulkRename" title="Rename the selected files from a template">Rename</button>
           <button class="btn" id="bulkMove" title="Move the selected files to a folder">Move</button>
           <button class="btn" id="bulkLinks" title="Copy the Telegram links of the selected files">Copy links</button>
           <button class="btn danger" id="bulkDelete" title="Delete the selected files">Delete</button>
@@ -269,13 +291,29 @@
             <div class="preview-info">
               <h3 id="previewName"></h3>
               <div class="preview-kind" id="previewKind"></div>
+              <div class="preview-movie" id="previewMovie" hidden></div>
               <dl id="previewMeta"></dl>
               <div class="preview-tags" id="previewTags"></div>
               <div class="preview-stars" id="previewStars"></div>
+              <div class="preview-inspect" id="previewInspect" hidden>
+                <div class="preview-note-head">
+                  <span>File details</span>
+                  <button class="link-btn" id="inspectBtn" type="button">Read again</button>
+                </div>
+                <dl id="previewInspectFields"></dl>
+                <p class="preview-inspect-note" id="previewInspectNote" hidden></p>
+              </div>
+              <div class="preview-revisions" id="previewRevisions" hidden>
+                <div class="preview-note-head"><span>Other revisions</span></div>
+                <div class="revision-list" id="revisionList"></div>
+              </div>
               <div class="preview-actions" id="fileActions">
                 <button class="btn primary" id="openBtn">Open</button>
+                <button class="btn" id="modelBtn" hidden title="Open this model in the built-in 3D viewer">View 3D</button>
+                <button class="btn" id="cadBtn" hidden title="Open this CAD file in its Windows app">Open in app</button>
                 <button class="btn" id="downloadBtn">Download</button>
                 <button class="btn" id="thumbBtn" hidden title="Pick the thumbnail shown in the library">Thumbnail</button>
+                <button class="btn" id="movieBtn" hidden title="Look up this file on IMDb">IMDb</button>
                 <button class="btn" id="completeBtn" hidden title="Download every part and join them into the original file">Download complete file</button>
                 <button class="btn" id="favoriteBtn">Favorite</button>
                 <button class="btn" id="restoreBtn" hidden>Restore</button>
@@ -294,6 +332,10 @@
                 <button class="link-btn" id="tagsBtn">Tags</button>
                 <span>·</span>
                 <button class="link-btn" id="starsBtn">Stars</button>
+                <span>·</span>
+                <button class="link-btn" id="collectionsBtn">Collections</button>
+                <span>·</span>
+                <button class="link-btn" id="inspectLink">File details</button>
                 <span>·</span>
                 <button class="link-btn danger" id="deleteBtn">Delete</button>
               </div>
@@ -336,6 +378,7 @@
       </div>
     </div>
     <div class="viewer-stage" id="viewerStage"></div>
+    <button class="viewer-close-float" id="viewerCloseFloat" type="button" title="Close (Esc)" aria-label="Close preview">×</button>
   </div>
 
   <div class="overlay lock" id="lockOverlay" hidden>
@@ -431,6 +474,14 @@
   <script src="/static/vendor/videojs/video.min.js"></script>
   <script src="/static/vendor/sprite-thumbnails/videojs-sprite-thumbnails.min.js"></script>
   <script src="/static/vendor/viewerjs/viewer.min.js"></script>
-  <script src="/static/app.js?v=6"></script>
+  <script src="/static/vendor/three/three.min.js"></script>
+  <script src="/static/vendor/three/libs/fflate.min.js"></script>
+  <script src="/static/vendor/three/loaders/STLLoader.js"></script>
+  <script src="/static/vendor/three/loaders/OBJLoader.js"></script>
+  <script src="/static/vendor/three/loaders/PLYLoader.js"></script>
+  <script src="/static/vendor/three/loaders/3MFLoader.js"></script>
+  <script src="/static/vendor/three/controls/OrbitControls.js"></script>
+  <script src="/static/viewer3d.js?v=2"></script>
+  <script src="/static/app.js?v=11"></script>
 </body>
 </html>

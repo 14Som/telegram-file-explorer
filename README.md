@@ -64,6 +64,13 @@ this PC** ticked (stop it on the first PC first). Setup never overwrites an exis
   select several and use **Stars** in the bulk bar. The Stars page lists every file
   they appear in; search matches names and aliases. *Look up online* fills the details
   and portrait from IAFD (Wikipedia when IAFD has nothing)
+- **IMDb details** — select a movie file and use **IMDb** (or its **⋯** menu) to look
+  it up by name. The app fills title, year, rating and votes, genres, runtime,
+  director, writers, cast, plot, country, language and poster, and shows them in the
+  preview pane with a rating badge on the tile. *Add the cast to Stars* links the
+  actors to your star catalogue and gives new stars an IMDb portrait. **Remove** clears
+  the details; the poster is kept across syncs and vault restores. Details come from
+  IMDb, one lookup per click
 - **Previews** — video plays in a Video.js player that resumes where you stopped,
   steps to the next/previous video, shows seek-preview thumbnails on the progress
   bar and adjusts playback speed. Images open in Viewer.js with zoom, pan,
@@ -74,12 +81,34 @@ this PC** ticked (stop it on the first PC first). Setup never overwrites an exis
   across syncs, sign-outs and vault restores. MKV, HEVC and other formats
   the built-in player can't decode can be opened in **mpv** instead. PDF and text
   preview inline; downloads keep the original filename
+- **Hover previews** — in tiles view, rest the mouse on a video tile to play a short
+  muted loop from the middle of the clip; image tiles zoom. Leaving the tile stops it
+- **3D & CAD files** — STL, 3MF, OBJ and PLY open in a built-in 3D viewer: drag to
+  orbit, wheel to zoom, right-drag to pan, and save the current view as the file's
+  thumbnail. STEP, IGES, Solid Edge (`.par`, `.psm`, `.asm`) and other CAD documents
+  open in their Windows app in one click; models and CAD files can also use the
+  Windows shell thumbnail
+- **File details** — *File details* on a file shows type-aware metadata: triangle
+  counts and bounding-box dimensions for models, 3MF title, designer and slicer,
+  image EXIF, video specs, and CAD title, author and revision
+- **Collections, saved views & tags** — group files into collections that cut across
+  folders, save the current search and filters as a view in the sidebar, give tags a
+  colour, and let **Continue** pick up the files you were watching
+- **Large libraries** — long lists scroll endlessly, search matches per-word
+  prefixes, and *Rename* renames a batch with `{name}`, `{ext}`, `{folder}`,
+  `{date}` and `{nn}` templates; revisions of the same CAD file are grouped together
+- **Library reports** — *Duplicate files* finds identical copies to clean up, and
+  *Storage report* shows what takes space by type, collection and file
+- **Shortcuts** — press `?` for a keyboard cheat-sheet
 - **Uploads** — drag & drop files or whole folder trees with per-file progress;
   cancel a running upload from the Uploads panel. Video, audio and image files are
   recognized from their content (even without a file extension) so they preview and
   stream. Anything above Telegram's
   2 GB limit (4 GB with Premium) is split into parts automatically and rejoined
   with one click, up to 64 GB
+- **Faster transfers** — downloads pull several 512 KB ranges at once, and uploads
+  send up to three files (or split volumes) in parallel, so large files don't wait
+  on round-trip time
 - **Fix old uploads** — right-click a file that was stored as a plain document and
   pick *Fix video streaming…* to download it and send it again as playable media
 - **Bulk actions** — Ctrl-click, Shift-click or Ctrl+A, then Download ZIP, Favorite,

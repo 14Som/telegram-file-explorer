@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -32,12 +33,16 @@ from . import (
     appconfig,
     applock,
     botsup,
+    filetypes,
+    iteminfo,
     mediatools,
+    movielookup,
     starlookup,
     storyboard,
     streamcache,
     thumbpick,
     vaultstore,
+    winshell,
 )
 from .catalog import (
     Catalog,
@@ -80,6 +85,17 @@ LOCK_OPEN_PATHS = {
 # Files above Telegram's per-file cap are split into volumes; this is the
 # largest source file the app will accept and split.
 SPLIT_HARD_CAP = 64 * 1024 ** 3
+# Uploads are RTT-bound (Telegram takes 512 KiB parts), so a few files or
+# volumes can be in flight at once. Stay modest to avoid FloodWait.
+UPLOAD_CONCURRENCY = 3
+_upload_gate: Optional[asyncio.Semaphore] = None
+
+
+def _upload_semaphore() -> asyncio.Semaphore:
+    global _upload_gate
+    if _upload_gate is None:
+        _upload_gate = asyncio.Semaphore(UPLOAD_CONCURRENCY)
+    return _upload_gate
 CSP = (
     "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
     "font-src 'self' data:; "
@@ -193,6 +209,34 @@ class BatchMoveBody(BatchIdsBody):
     folder: str
 
 
+class BatchRenameBody(BatchIdsBody):
+    template: str = "{name}"
+    preview: bool = False
+
+
+class CollectionBody(BaseModel):
+    name: str = ""
+
+
+class CollectionAddBody(BatchIdsBody):
+    remove: bool = False
+
+
+class ViewBody(BaseModel):
+    name: str = ""
+    data: Dict[str, Any] = {}
+
+
+class TagMetaBody(BaseModel):
+    tag: str = ""
+    color: str = ""
+    group: str = ""
+
+
+class ThumbImageBody(BaseModel):
+    image: str = ""
+
+
 class StarBody(BaseModel):
     name: str = ""
     aliases: Optional[str] = None
@@ -222,6 +266,15 @@ class StarImageBody(BaseModel):
 
 class StarLookupBody(BaseModel):
     overwrite: bool = False
+
+
+class MovieSearchBody(BaseModel):
+    query: str = ""
+
+
+class MovieBody(BaseModel):
+    imdb_id: str
+    add_cast: bool = True
 
 
 class FolderBody(BaseModel):
@@ -304,6 +357,31 @@ def public_item(item: Dict[str, Any], vault: Optional[Dict[str, Any]]) -> Dict[s
     )
     data["stream_url"] = f"/api/stream/{item['id']}"
     data["download_url"] = f"/api/download/{item['id']}"
+    data["imdb_id"] = str(item.get("imdb_id") or "")
+    movie = None
+    if item.get("imdb_json"):
+        try:
+            movie = json.loads(item["imdb_json"])
+        except (TypeError, ValueError):
+            movie = None
+    data["movie"] = movie
+    poster_version = int(item.get("imdb_poster_version") or 0)
+    data["movie_poster_url"] = (
+        f"/api/movies/{item['id']}/poster?v={poster_version}"
+        if poster_version
+        else None
+    )
+    meta = None
+    if item.get("meta_json"):
+        try:
+            meta = json.loads(item["meta_json"])
+        except (TypeError, ValueError):
+            meta = None
+    data["meta"] = meta
+    data["family"] = filetypes.classify(
+        str(item.get("name") or ""), str(item.get("kind") or "")
+    )
+    data["viewer"] = filetypes.viewer_format(str(item.get("name") or ""))
     return data
 
 
@@ -384,6 +462,70 @@ def _store_star_image(star_id: int, data: bytes) -> int:
     tmp.write_bytes(data)
     os.replace(tmp, path)
     return int(time.time() * 1000)
+
+
+def _movie_poster_path(item_id: int) -> Path:
+    return appconfig.THUMB_DIR / "movies" / f"{int(item_id)}.img"
+
+
+def _store_movie_poster(item_id: int, data: bytes) -> int:
+    path = _movie_poster_path(item_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+    return int(time.time() * 1000)
+
+
+def _link_movie_cast(
+    state: Any,
+    chat_id: Optional[int],
+    item_id: int,
+    cast: List[Dict[str, Any]],
+) -> Tuple[List[Tuple[Dict[str, Any], Dict[str, Any]]], int]:
+    """Create or reuse star records for the IMDb cast and assign them."""
+    linked: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    created = 0
+    for person in cast or []:
+        name = clean_name(str(person.get("name") or ""), "")
+        if not name:
+            continue
+        star = state.catalog.performer_by_name(chat_id, name)
+        if star is None:
+            try:
+                star = state.catalog.create_performer(chat_id, name=name)
+                created += 1
+            except ValueError:
+                star = state.catalog.performer_by_name(chat_id, name)
+        if star is None:
+            continue
+        linked.append((star, person))
+    if linked:
+        state.catalog.add_item_performers(
+            [int(item_id)], [int(star["id"]) for star, _ in linked], chat_id
+        )
+    return linked, created
+
+
+def _store_cast_portraits(
+    state: Any,
+    chat_id: Optional[int],
+    linked: List[Tuple[Dict[str, Any], Dict[str, Any]]],
+    limit: int = 8,
+) -> int:
+    saved = 0
+    for star, person in linked:
+        if saved >= limit:
+            break
+        if int(star.get("image_version") or 0):
+            continue
+        data = movielookup.image(str(person.get("image") or ""), small=True)
+        if not data:
+            continue
+        version = _store_star_image(int(star["id"]), data)
+        state.catalog.set_performer_image(int(star["id"]), chat_id, version)
+        saved += 1
+    return saved
 
 
 async def _portrait_bytes(
@@ -825,6 +967,8 @@ async def nav(request: Request):
         "kinds": state.catalog.kinds(chat_id),
         "stats": state.catalog.stats(chat_id),
         "stars": state.catalog.performer_count(chat_id),
+        "collections": state.catalog.collections(chat_id),
+        "views": state.catalog.views(chat_id),
         "vault": state.service.status().get("vault"),
     }
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
@@ -1406,6 +1550,8 @@ async def items(
     recursive: bool = False,
     note: bool = False,
     star: Optional[int] = Query(None, ge=1),
+    collection: Optional[int] = Query(None, ge=1),
+    watching: bool = False,
     min_size: Optional[int] = Query(None, ge=0),
     max_size: Optional[int] = Query(None, ge=0),
     after: str = Query("", max_length=10),
@@ -1441,6 +1587,8 @@ async def items(
         has_note=note,
         recursive=recursive,
         performer=star,
+        collection=collection,
+        watching=watching,
     )
     vault = _vault(state.service.status())
     result["items"] = [public_item(item, vault) for item in result["items"]]
@@ -1454,6 +1602,9 @@ async def get_item(item_id: int, request: Request):
     state = _state(request)
     item = await _scoped_item(state, item_id)
     public = public_item(item, _vault(state.service.status()))
+    public["collections"] = await run_in_threadpool(
+        state.catalog.item_collections, item_id, _chat_id(state)
+    )
     _attach_part_info(state, [public])
     await _attach_stars(state, [public])
     return public
@@ -1532,6 +1683,128 @@ async def save_position(item_id: int, body: PlaybackBody, request: Request):
         played_at=datetime.now().isoformat(timespec="seconds") if position else "",
     )
     return {"saved": True, "play_pos": position}
+
+
+# --------------------------------------------------------------------- movies
+@app.post("/api/items/{item_id}/movie/search")
+async def movie_search(item_id: int, body: MovieSearchBody, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    guess = movielookup.guess_title(item.get("name") or "")
+    query = str(body.query or "").strip() or str(guess.get("query") or "")
+    if not query:
+        raise TGError("Type a movie name to search IMDb.")
+    try:
+        results = await run_in_threadpool(movielookup.search, query)
+        if not results and guess.get("query") and query != guess["query"]:
+            results = await run_in_threadpool(
+                movielookup.search, str(guess["query"])
+            )
+    except movielookup.LookupError as exc:
+        raise TGError(str(exc))
+    for result in results:
+        poster = str(result.pop("poster", "") or "")
+        result["poster_url"] = (
+            "/api/imdb/image?url=" + quote(poster, safe="") if poster else None
+        )
+    return {
+        "query": query,
+        "year": guess.get("year"),
+        "results": results,
+        "url": "https://www.imdb.com/",
+    }
+
+
+@app.post("/api/items/{item_id}/movie")
+async def attach_movie(item_id: int, body: MovieBody, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    try:
+        result = await run_in_threadpool(movielookup.lookup, body.imdb_id)
+    except movielookup.LookupError as exc:
+        raise TGError(str(exc))
+    movie = result["movie"]
+    poster = result.get("image_bytes")
+    poster_version = (
+        await run_in_threadpool(_store_movie_poster, item["id"], poster)
+        if poster
+        else 0
+    )
+    item = await run_in_threadpool(
+        state.catalog.update,
+        item["id"],
+        imdb_id=movie["id"],
+        imdb_json=json.dumps(movie, ensure_ascii=False),
+        imdb_poster_version=poster_version,
+    )
+    linked: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    created = 0
+    portraits = 0
+    if body.add_cast:
+        linked, created = await run_in_threadpool(
+            _link_movie_cast, state, _chat_id(state), item["id"], movie.get("cast")
+        )
+        portraits = await run_in_threadpool(
+            _store_cast_portraits, state, _chat_id(state), linked
+        )
+    public = public_item(item, _vault(state.service.status()))
+    await _attach_stars(state, [public])
+    return {
+        "item": public,
+        "movie": movie,
+        "poster": bool(poster_version),
+        "cast_linked": len(linked),
+        "cast_created": created,
+        "portraits": portraits,
+    }
+
+
+@app.delete("/api/items/{item_id}/movie")
+async def clear_movie(item_id: int, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    item = await run_in_threadpool(
+        state.catalog.update,
+        item["id"],
+        imdb_id="",
+        imdb_json="",
+        imdb_poster_version=0,
+    )
+    await run_in_threadpool(
+        _movie_poster_path(item["id"]).unlink, missing_ok=True
+    )
+    public = public_item(item, _vault(state.service.status()))
+    await _attach_stars(state, [public])
+    return {"item": public, "cleared": True}
+
+
+@app.get("/api/movies/{item_id}/poster")
+async def movie_poster(item_id: int, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    if int(item.get("imdb_poster_version") or 0) <= 0:
+        raise HTTPException(status_code=404, detail="No poster for this file.")
+    path = _movie_poster_path(item["id"])
+    if not await run_in_threadpool(path.is_file):
+        raise HTTPException(status_code=404, detail="No poster for this file.")
+    data = await run_in_threadpool(path.read_bytes)
+    return Response(
+        content=data,
+        media_type=_sniff_image(data),
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+@app.get("/api/imdb/image")
+async def imdb_image(url: str = Query("", max_length=1200)):
+    data = await run_in_threadpool(movielookup.image, url, True)
+    if not data:
+        raise HTTPException(status_code=404, detail="Image not available.")
+    return Response(
+        content=data,
+        media_type=_sniff_image(data),
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 # ---------------------------------------------------------------------- stars
@@ -1754,6 +2027,372 @@ async def add_item_stars(body: BatchStarsBody, request: Request):
     except ValueError as exc:
         raise TGError(str(exc))
     return {"files": len(ids), "stars": len(star_ids), "links": links}
+
+
+# ----------------------------------------------------- 3D, CAD and extras
+INSPECT_MAX_BYTES = 512 * 1024 ** 2
+SHELL_THUMB_MAX_BYTES = 256 * 1024 ** 2
+_external_locks: Dict[int, asyncio.Lock] = {}
+_shell_thumb_locks: Dict[int, asyncio.Lock] = {}
+
+
+def _scratch_path(item: Dict[str, Any], tag: str) -> Path:
+    folder = appconfig.CACHE_DIR / tag / f"{int(item['id'])}-{uuid.uuid4().hex[:10]}"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / clean_name(str(item.get("name") or "file"), "file")
+
+
+async def _download_item_copy(state: Any, item: Dict[str, Any], tag: str) -> Path:
+    message, _size, _mime = await state.service.media_info(item)
+    path = _scratch_path(item, tag)
+    try:
+        await state.service.download_to(message, path)
+    except Exception:
+        shutil.rmtree(path.parent, ignore_errors=True)
+        raise
+    return path
+
+
+def _drop_copy(path: Path) -> None:
+    shutil.rmtree(path.parent, ignore_errors=True)
+
+
+def _public_meta(info: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    return info if isinstance(info, dict) else None
+
+
+@app.post("/api/items/{item_id}/inspect")
+async def inspect_item(item_id: int, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    size = int(item.get("size") or 0)
+    if size > INSPECT_MAX_BYTES:
+        info = {
+            "type": item.get("kind") or "file",
+            "fields": [],
+            "size": size,
+            "note": "This file is too large to inspect on this PC.",
+        }
+    else:
+        path = await _download_item_copy(state, item, "inspect")
+        try:
+            info = await run_in_threadpool(
+                iteminfo.inspect_file, path, str(item.get("name") or path.name)
+            )
+        finally:
+            _drop_copy(path)
+    info.setdefault("size", size)
+    updated = await run_in_threadpool(
+        state.catalog.update,
+        item_id,
+        meta_json=json.dumps(info, ensure_ascii=False),
+    )
+    public = public_item(updated or item, _vault(state.service.status()))
+    await _attach_stars(state, [public])
+    return {"item": public, "info": info}
+
+
+async def _windows_thumbnail(state: Any, item: Dict[str, Any]) -> bytes:
+    if os.name != "nt":
+        raise TGError("Windows previews are only available on Windows.")
+    size = int(item.get("size") or 0)
+    if size > SHELL_THUMB_MAX_BYTES:
+        raise TGError("This file is too large to build a Windows preview.")
+    cache = appconfig.THUMB_DIR / f"{int(item['id'])}.thumb"
+    lock = _shell_thumb_locks.setdefault(int(item["id"]), asyncio.Lock())
+    async with lock:
+        if cache.is_file():
+            return await run_in_threadpool(cache.read_bytes)
+        path = await _download_item_copy(state, item, "shellthumb")
+        try:
+            data = await run_in_threadpool(winshell.thumbnail, path, 640)
+        finally:
+            _drop_copy(path)
+        if not data:
+            raise TGError("Windows has no preview for this file.")
+        appconfig.THUMB_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_suffix(".tmp")
+        await run_in_threadpool(tmp.write_bytes, data)
+        os.replace(tmp, cache)
+        await run_in_threadpool(
+            state.catalog.update,
+            item["id"],
+            has_thumb=1,
+            thumb_version=int(time.time()),
+        )
+        return data
+
+
+@app.post("/api/items/{item_id}/thumb/windows")
+async def windows_thumbnail(item_id: int, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    await _windows_thumbnail(state, item)
+    updated = await run_in_threadpool(state.catalog.get, item_id)
+    public = public_item(updated or item, _vault(state.service.status()))
+    await _attach_stars(state, [public])
+    return {"item": public, "ok": True}
+
+
+@app.post("/api/items/{item_id}/thumb/image")
+async def set_thumb_image(item_id: int, body: ThumbImageBody, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    marker = "data:image/jpeg;base64,"
+    raw = str(body.image or "").strip()
+    if not raw.startswith(marker):
+        raise TGError("Send the thumbnail as a JPEG image.")
+    try:
+        data = base64.b64decode(raw[len(marker):], validate=True)
+    except Exception:
+        raise TGError("That image could not be read.")
+    if (
+        not data
+        or len(data) > 8 * 1024 * 1024
+        or not data.startswith(b"\xff\xd8")
+    ):
+        raise TGError("That image is not a usable JPEG.")
+    target = thumbpick.custom_path(item_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    await run_in_threadpool(target.write_bytes, data)
+    updated = await run_in_threadpool(
+        state.catalog.update,
+        item_id,
+        has_thumb=1,
+        thumb_version=int(time.time()),
+    )
+    public = public_item(updated or item, _vault(state.service.status()))
+    await _attach_stars(state, [public])
+    return {"item": public, "ok": True}
+
+
+@app.post("/api/items/{item_id}/open-external")
+async def open_external_item(item_id: int, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    if os.name != "nt":
+        raise TGError("Opening files in their own app is only available on Windows.")
+    lock = _external_locks.setdefault(int(item["id"]), asyncio.Lock())
+    async with lock:
+        folder = appconfig.CACHE_DIR / "external" / str(int(item["id"]))
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / clean_name(str(item.get("name") or "file"), "file")
+        size = int(item.get("size") or 0)
+        if not path.is_file() or (size and path.stat().st_size != size):
+            message, _size, _mime = await state.service.media_info(item)
+            await state.service.download_to(message, path)
+        await run_in_threadpool(os.startfile, str(path))
+    return {"opened": True, "name": path.name}
+
+
+def _rename_target(item: Dict[str, Any], template: str, index: int) -> str:
+    stem, ext = os.path.splitext(str(item.get("name") or ""))
+    folder = str(item.get("folder") or "")
+    values = {
+        "name": stem,
+        "ext": ext.lstrip("."),
+        "kind": str(item.get("kind_label") or item.get("kind") or "File"),
+        "folder": folder_leaf(folder) if folder else "Other",
+        "date": str(item.get("tg_date") or item.get("added_at") or "")[:10],
+        "n": index,
+        "nn": f"{index:02d}",
+    }
+
+    class _Values(dict):
+        def __missing__(self, key: str) -> str:
+            return "{" + key + "}"
+
+    try:
+        proposed = str(template or "{name}").format_map(_Values(values))
+    except (ValueError, IndexError, KeyError):
+        raise TGError("That name template is not valid.")
+    if "ext" not in str(template or ""):
+        proposed += ext
+    return clean_name(proposed, stem or "file")
+
+
+@app.post("/api/batch/rename")
+async def batch_rename(body: BatchRenameBody, request: Request):
+    state = _state(request)
+    items = await _batch_items(state, body.item_ids)
+    proposed: List[Dict[str, Any]] = []
+    used: Dict[str, int] = {}
+    for index, item in enumerate(items, start=1):
+        target = _rename_target(item, body.template, index)
+        key = target.lower()
+        if key in used:
+            used[key] += 1
+            stem, ext = os.path.splitext(target)
+            target = f"{stem} ({used[key]}){ext}"
+        else:
+            used[key] = 1
+        proposed.append({"id": item["id"], "from": item.get("name"), "to": target})
+    changes = [entry for entry in proposed if entry["from"] != entry["to"]]
+    if body.preview:
+        return {"renames": proposed, "applied": 0, "preview": True}
+    applied = 0
+    warnings = 0
+    for item, entry in zip(items, proposed):
+        if entry["from"] == entry["to"]:
+            continue
+        updated = await run_in_threadpool(state.catalog.rename, item["id"], entry["to"])
+        if updated is None:
+            continue
+        applied += 1
+        if state.service.is_bot_vault():
+            Catalog.sync_to_bot(state.bot_db, updated["message_id"], name=updated["name"])
+        try:
+            await state.service.edit_caption(
+                updated["message_id"], updated["name"], updated.get("chat_id")
+            )
+        except TGError:
+            warnings += 1
+    return {"renames": changes, "applied": applied, "warnings": warnings, "preview": False}
+
+
+@app.get("/api/collections")
+async def list_collections(request: Request):
+    state = _state(request)
+    return {"collections": state.catalog.collections(_chat_id(state))}
+
+
+@app.post("/api/collections")
+async def create_collection(body: CollectionBody, request: Request):
+    state = _state(request)
+    try:
+        collection = await run_in_threadpool(
+            state.catalog.create_collection, body.name, _chat_id(state)
+        )
+    except ValueError as exc:
+        raise TGError(str(exc))
+    return {"collection": collection}
+
+
+@app.patch("/api/collections/{collection_id}")
+async def rename_collection(collection_id: int, body: CollectionBody, request: Request):
+    state = _state(request)
+    try:
+        await run_in_threadpool(
+            state.catalog.rename_collection, collection_id, body.name, _chat_id(state)
+        )
+    except ValueError as exc:
+        raise TGError(str(exc))
+    return {"collections": state.catalog.collections(_chat_id(state))}
+
+
+@app.delete("/api/collections/{collection_id}")
+async def delete_collection(collection_id: int, request: Request):
+    state = _state(request)
+    removed = await run_in_threadpool(
+        state.catalog.delete_collection, collection_id, _chat_id(state)
+    )
+    if not removed:
+        raise HTTPException(status_code=404, detail="Collection not found.")
+    return {"deleted": True, "collections": state.catalog.collections(_chat_id(state))}
+
+
+@app.post("/api/collections/{collection_id}/items")
+async def collection_items(collection_id: int, body: CollectionAddBody, request: Request):
+    state = _state(request)
+    ids = list(dict.fromkeys(int(value) for value in body.item_ids))[:BATCH_LIMIT]
+    try:
+        changed = await run_in_threadpool(
+            state.catalog.collection_add,
+            collection_id,
+            ids,
+            _chat_id(state),
+            body.remove,
+        )
+    except ValueError as exc:
+        raise TGError(str(exc))
+    return {
+        "changed": changed,
+        "removed": body.remove,
+        "collections": state.catalog.collections(_chat_id(state)),
+    }
+
+
+@app.get("/api/saved-views")
+async def list_views(request: Request):
+    state = _state(request)
+    return {"views": state.catalog.views(_chat_id(state))}
+
+
+@app.post("/api/saved-views")
+async def create_saved_view(body: ViewBody, request: Request):
+    state = _state(request)
+    try:
+        view = await run_in_threadpool(
+            state.catalog.create_view, body.name, body.data, _chat_id(state)
+        )
+    except ValueError as exc:
+        raise TGError(str(exc))
+    return {"view": view, "views": state.catalog.views(_chat_id(state))}
+
+
+@app.delete("/api/saved-views/{view_id}")
+async def delete_saved_view(view_id: int, request: Request):
+    state = _state(request)
+    removed = await run_in_threadpool(
+        state.catalog.delete_view, view_id, _chat_id(state)
+    )
+    if not removed:
+        raise HTTPException(status_code=404, detail="View not found.")
+    return {"deleted": True, "views": state.catalog.views(_chat_id(state))}
+
+
+@app.post("/api/tags/meta")
+async def tag_meta(body: TagMetaBody, request: Request):
+    state = _state(request)
+    try:
+        await run_in_threadpool(
+            state.catalog.set_tag_meta,
+            body.tag,
+            _chat_id(state),
+            body.color,
+            body.group,
+        )
+    except ValueError as exc:
+        raise TGError(str(exc))
+    return {"tags": state.catalog.tags(_chat_id(state))[:120]}
+
+
+@app.get("/api/reports/duplicates")
+async def duplicate_report(request: Request, limit: int = Query(100, ge=1, le=500)):
+    state = _state(request)
+    report = await run_in_threadpool(
+        state.catalog.duplicates, _chat_id(state), limit
+    )
+    vault = _vault(state.service.status())
+    for group in report["groups"]:
+        group["items"] = [public_item(item, vault) for item in group["items"]]
+        _attach_part_info(state, group["items"])
+        await _attach_stars(state, group["items"])
+    return report
+
+
+@app.get("/api/reports/stats")
+async def storage_report(request: Request):
+    state = _state(request)
+    report = await run_in_threadpool(state.catalog.library_stats, _chat_id(state))
+    vault = _vault(state.service.status())
+    report["largest"] = [public_item(item, vault) for item in report["largest"]]
+    _attach_part_info(state, report["largest"])
+    return report
+
+
+@app.get("/api/items/{item_id}/revisions")
+async def item_revisions(item_id: int, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    rows = await run_in_threadpool(
+        state.catalog.revisions, item, _chat_id(state)
+    )
+    vault = _vault(state.service.status())
+    items = [public_item(row, vault) for row in rows]
+    _attach_part_info(state, items)
+    await _attach_stars(state, items)
+    return {"items": items, "base": item.get("name")}
 
 
 @app.get("/api/tools")
@@ -2204,71 +2843,107 @@ async def _discard_transfer_items(state: Any, transfer: Dict[str, Any]) -> None:
 
 
 async def _run_uploads(state: Any, entries: List[Dict[str, Any]]) -> None:
-    for entry in entries:
-        transfer = state.service.transfers.get(entry["transfer_id"])
-        original = Path(entry["path"])
-        try:
-            if entry.get("split"):
-                if transfer is not None:
-                    if transfer.get("cancel"):
-                        raise TransferCancelled()
-                    transfer.update(state="splitting", sent=0)
-                workdir = appconfig.CACHE_DIR / "uploads" / f"split-{uuid.uuid4().hex}"
+    gate = _upload_semaphore()
+    await asyncio.gather(
+        *(_run_upload_entry(state, entry, gate) for entry in entries),
+        return_exceptions=True,
+    )
+
+
+async def _run_upload_entry(
+    state: Any, entry: Dict[str, Any], gate: asyncio.Semaphore
+) -> None:
+    transfer = state.service.transfers.get(entry["transfer_id"])
+    original = Path(entry["path"])
+    try:
+        if entry.get("split"):
+            if transfer is not None:
+                if transfer.get("cancel"):
+                    raise TransferCancelled()
+                transfer.update(state="splitting", sent=0)
+            workdir = appconfig.CACHE_DIR / "uploads" / f"split-{uuid.uuid4().hex}"
+            try:
                 try:
-                    try:
-                        volumes = await run_in_threadpool(
-                            split_file, original, workdir, PART_SIZE
-                        )
-                    except Exception as exc:
-                        detail = str(exc) or "The file could not be split into parts."
-                        raise HTTPException(status_code=500, detail=detail) from exc
-                    if transfer is not None:
-                        transfer["parts"] = len(volumes)
-                    try:
-                        original.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                    sent_base = 0
-                    last_index = len(volumes) - 1
-                    for index, volume in enumerate(volumes):
+                    volumes = await run_in_threadpool(
+                        split_file, original, workdir, PART_SIZE
+                    )
+                except Exception as exc:
+                    detail = str(exc) or "The file could not be split into parts."
+                    raise HTTPException(status_code=500, detail=detail) from exc
+                if transfer is not None:
+                    transfer["parts"] = len(volumes)
+                try:
+                    original.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                bases: List[int] = []
+                total = 0
+                for volume in volumes:
+                    bases.append(total)
+                    total += volume.stat().st_size
+
+                async def upload_volume(
+                    index: int, volume: Path, sent_base: int
+                ) -> None:
+                    async with gate:
                         if transfer is not None and transfer.get("cancel"):
                             raise TransferCancelled()
-                        part_entry = {
-                            **entry,
-                            "path": str(volume),
-                            "name": volume.name,
-                            "sent_base": sent_base,
-                            "shared": True,
-                            "last": index == last_index,
-                        }
-                        sent_base += volume.stat().st_size
-                        await state.service.upload_one(part_entry, state.catalog)
-                finally:
-                    shutil.rmtree(workdir, ignore_errors=True)
-            else:
+                        await state.service.upload_one(
+                            {
+                                **entry,
+                                "path": str(volume),
+                                "name": volume.name,
+                                "sent_base": sent_base,
+                                "part_index": index,
+                                "shared": True,
+                            },
+                            state.catalog,
+                        )
+
+                results = await asyncio.gather(
+                    *(
+                        upload_volume(index, volume, bases[index])
+                        for index, volume in enumerate(volumes)
+                    ),
+                    return_exceptions=True,
+                )
+                if transfer is not None and transfer.get("cancel"):
+                    raise TransferCancelled()
+                problem = next(
+                    (result for result in results if isinstance(result, BaseException)),
+                    None,
+                )
+                if problem is not None:
+                    raise problem
+                if transfer is not None:
+                    transfer.update(state="done", sent=transfer["size"], error=None)
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
+        else:
+            async with gate:
                 await state.service.upload_one(entry, state.catalog)
-        except TransferCancelled:
-            if transfer is not None:
-                transfer.update(state="cancelled", error=None)
-                await _discard_transfer_items(state, transfer)
-            log.info("Upload cancelled for %s", entry["name"])
-        except Exception as exc:
-            message = friendly_error(exc) if not isinstance(exc, HTTPException) else exc.detail
-            if transfer is not None:
-                transfer.update(state="error", error=message)
-            log.warning("Upload failed for %s: %s", entry["name"], message)
-        finally:
-            if transfer is not None:
-                transfer["busy"] = False
-            path = original
-            try:
-                path.unlink(missing_ok=True)
-                if path.parent.is_dir() and not any(path.parent.iterdir()):
-                    path.parent.rmdir()
-                    if path.parent.parent.is_dir() and not any(path.parent.parent.iterdir()):
-                        path.parent.parent.rmdir()
-            except OSError:
-                pass
+    except TransferCancelled:
+        if transfer is not None:
+            transfer.update(state="cancelled", error=None)
+            await _discard_transfer_items(state, transfer)
+        log.info("Upload cancelled for %s", entry["name"])
+    except Exception as exc:
+        message = friendly_error(exc) if not isinstance(exc, HTTPException) else exc.detail
+        if transfer is not None:
+            transfer.update(state="error", error=message)
+        log.warning("Upload failed for %s: %s", entry["name"], message)
+    finally:
+        if transfer is not None:
+            transfer["busy"] = False
+        path = original
+        try:
+            path.unlink(missing_ok=True)
+            if path.parent.is_dir() and not any(path.parent.iterdir()):
+                path.parent.rmdir()
+                if path.parent.parent.is_dir() and not any(path.parent.parent.iterdir()):
+                    path.parent.parent.rmdir()
+        except OSError:
+            pass
 
 
 @app.get("/api/transfers")
@@ -2449,6 +3124,19 @@ async def thumb(item_id: int, request: Request):
             headers={"Cache-Control": "private, max-age=86400"},
         )
     if not item.get("has_thumb"):
+        if filetypes.classify(
+            str(item.get("name") or ""), str(item.get("kind") or "")
+        ) in {"model", "cad"}:
+            try:
+                data = await _windows_thumbnail(state, item)
+            except Exception:
+                data = None
+            if data:
+                return Response(
+                    content=data,
+                    media_type=_sniff_image(data),
+                    headers={"Cache-Control": "private, max-age=86400"},
+                )
         raise HTTPException(status_code=404, detail="No thumbnail.")
     try:
         result = await state.service.thumbnail(item)

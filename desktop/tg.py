@@ -15,6 +15,7 @@ import mimetypes
 import os
 import shutil
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
@@ -40,6 +41,7 @@ from telethon.tl.types import (
 )
 
 from . import appconfig
+from . import filetypes
 from .catalog import Catalog, clean_folder_path, clean_name, default_folder
 
 log = logging.getLogger("tfe.tg")
@@ -66,6 +68,14 @@ ACTIVE_TRANSFER_STATES = {
 # (4096 parts) is rejected with FilePartsInvalidError. Split parts must stay
 # at or below this size.
 PART_SIZE = 2000 * 1024 * 1024
+# Each GetFile request is latency-bound, so keep several in flight. A window
+# of 4 x 1 MiB is enough to hide RTT to a distant DC without flooding.
+DOWNLOAD_STREAMS = 4
+DOWNLOAD_SEGMENT = 1024 * 1024
+# Telegram caps one GetFile request at 512 KiB. Asking for more makes Telethon
+# switch to its generic iterator (extra alignment requests), so stay at the cap
+# and let each segment be a couple of back-to-back chunks instead.
+DOWNLOAD_CHUNK = 512 * 1024
 
 # Telegram Desktop's published app credentials. They let the first sign-in
 # start without a my.telegram.org app; custom credentials always take priority.
@@ -1368,12 +1378,16 @@ class TelegramService:
         has_thumb = bool(getattr(document, "thumbs", None)) or photo is not None
         if kind == "sticker" and getattr(document, "mime_type", "") == "image/webp":
             has_thumb = True
+        name = clean_name(name or f"{_LABELS.get(kind, 'File')} {stamp}")
+        # STL/3MF and CAD documents get their own families so they can be
+        # filtered, previewed and inspected separately from plain documents.
+        kind = filetypes.classify(name, kind)
         return {
             "chat_id": chat_id,
             "message_id": int(message.id),
             "doc_id": getattr(document, "id", None) if document is not None else None,
             "access_hash": getattr(document, "access_hash", None) if document is not None else None,
-            "name": clean_name(name or f"{_LABELS.get(kind, 'File')} {stamp}"),
+            "name": name,
             "kind": kind,
             "mime": mime or None,
             "size": int(size) if size else None,
@@ -1415,22 +1429,77 @@ class TelegramService:
             return
         client = self._require_ready()
         offset = max(0, int(start))
+        end = offset + remaining
+        segment = DOWNLOAD_SEGMENT
+        streams = max(1, min(DOWNLOAD_STREAMS, (remaining + segment - 1) // segment))
+
+        async def fetch(position: int, size: int) -> bytes:
+            buffer = bytearray()
+            cursor = 0
+            request = min(segment, DOWNLOAD_CHUNK)
+            while cursor < size:
+                need = size - cursor
+                # The limit counts chunks, not bytes; assume the smallest chunk
+                # Telegram may return so a short response can never end a
+                # segment early. The iterator is closed explicitly so a borrowed
+                # DC sender is handed back instead of waiting for the GC.
+                iterator = client.iter_download(
+                    message,
+                    offset=position + cursor,
+                    request_size=request,
+                    limit=max(1, (need + request - 1) // request),
+                )
+                got = 0
+                try:
+                    async for chunk in iterator:
+                        buffer.extend(chunk)
+                        got += len(chunk)
+                        if got >= need:
+                            break
+                finally:
+                    await iterator.close()
+                if got == 0:
+                    # No progress: the server has no more data from here, so
+                    # stop rather than spin on the same offset.
+                    break
+                cursor += got
+            return bytes(buffer[:size])
+
+        pending: "deque[Tuple[int, asyncio.Task[bytes]]]" = deque()
+        next_position = offset
+
+        def schedule() -> None:
+            nonlocal next_position
+            while next_position < end and len(pending) < streams:
+                size = min(segment, end - next_position)
+                pending.append(
+                    (size, asyncio.create_task(fetch(next_position, size)))
+                )
+                next_position += size
+
         try:
-            async for chunk in client.iter_download(
-                message, offset=offset, request_size=1024 * 1024
-            ):
-                if remaining <= 0:
-                    break
-                data = bytes(chunk[:remaining])
-                remaining -= len(data)
-                if data:
-                    yield data
-                if remaining <= 0:
-                    break
+            schedule()
+            while pending:
+                size, task = pending.popleft()
+                try:
+                    data = await task
+                except asyncio.CancelledError:
+                    task.cancel()
+                    raise
+                if len(data) < size:
+                    # Never hand a hole to the player or the saved file.
+                    raise TGError("The download ended before the file was complete.")
+                yield data
+                schedule()
         except asyncio.CancelledError:
             raise
+        except TGError:
+            raise
         except Exception as exc:
-            raise TGError(friendly_error(exc))
+            raise TGError(friendly_error(exc)) from exc
+        finally:
+            for _, task in pending:
+                task.cancel()
 
     async def thumbnail(self, item: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
         client = self._require_ready()
@@ -1490,10 +1559,25 @@ class TelegramService:
         return message, size, mime
 
     async def download_to(self, message: Any, path: Path, progress=None) -> None:
-        client = self._require_ready()
-        await client.download_media(
-            message, file=str(path), progress_callback=progress
-        )
+        self._require_ready()
+        file_info = getattr(message, "file", None)
+        size = int(getattr(file_info, "size", 0) or 0)
+        if not size:
+            document = getattr(message, "document", None)
+            size = int(getattr(document, "size", 0) or 0)
+        if not size:
+            client = self._require_ready()
+            await client.download_media(
+                message, file=str(path), progress_callback=progress
+            )
+            return
+        written = 0
+        with path.open("wb") as handle:
+            async for chunk in self.stream_chunks(message, 0, size):
+                handle.write(chunk)
+                written += len(chunk)
+                if progress is not None:
+                    progress(written, size)
 
     async def edit_caption(
         self, message_id: int, name: str, chat_id: Optional[int] = None
@@ -1622,11 +1706,16 @@ class TelegramService:
             # Telethon calls this between upload parts; raising aborts the upload.
             if transfer.get("cancel"):
                 raise TransferCancelled()
-            self._progress(
-                transfer_id,
-                sent_base + sent,
-                None if shared else total,
-            )
+            if shared:
+                # Split volumes upload in parallel; sum every volume so the
+                # bar only moves forward.
+                index = int(entry.get("part_index") or 0)
+                progress = transfer.setdefault("part_progress", {})
+                progress[index] = (sent_base, int(sent or 0))
+                done = sum(base + value for base, value in progress.values())
+                self._progress(transfer_id, done, None)
+            else:
+                self._progress(transfer_id, sent_base + sent, total)
 
         try:
             message = await client.send_file(
@@ -1660,14 +1749,14 @@ class TelegramService:
                 catalog.update(item_id, folder=folder, folder_source="user")
             item = catalog.get(item_id)
             if shared:
+                # The caller marks the whole split transfer done once every
+                # volume has finished; one part finishing proves nothing.
                 if transfer is not None:
                     transfer.update(
-                        state="done" if entry.get("last") else "uploading",
+                        state="uploading",
                         item_id=transfer.get("item_id") or item_id,
                         error=None,
                     )
-                    if entry.get("last"):
-                        transfer["sent"] = transfer["size"]
             else:
                 transfer.update(
                     state="done", sent=transfer["size"], item_id=item_id, error=None

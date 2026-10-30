@@ -6,12 +6,16 @@ references to channel messages so the UI can be fast and searchable.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from . import filetypes
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -43,6 +47,10 @@ CREATE TABLE IF NOT EXISTS items (
     has_thumb INTEGER NOT NULL DEFAULT 1,
     play_pos REAL NOT NULL DEFAULT 0,
     played_at TEXT NOT NULL DEFAULT '',
+    imdb_id TEXT NOT NULL DEFAULT '',
+    imdb_json TEXT NOT NULL DEFAULT '',
+    imdb_poster_version INTEGER NOT NULL DEFAULT 0,
+    meta_json TEXT NOT NULL DEFAULT '',
     UNIQUE(chat_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS idx_items_name ON items(name COLLATE NOCASE);
@@ -83,6 +91,58 @@ CREATE TABLE IF NOT EXISTS item_performers (
     PRIMARY KEY (item_id, performer_id)
 );
 CREATE INDEX IF NOT EXISTS idx_item_performers_star ON item_performers(performer_id);
+CREATE TABLE IF NOT EXISTS collections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    icon TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (chat_id, name)
+);
+CREATE TABLE IF NOT EXISTS collection_items (
+    collection_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,
+    added_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (collection_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_collection_items_item ON collection_items(item_id);
+CREATE TABLE IF NOT EXISTS saved_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    data TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (chat_id, name)
+);
+CREATE TABLE IF NOT EXISTS tag_meta (
+    chat_id INTEGER NOT NULL,
+    tag TEXT NOT NULL COLLATE NOCASE,
+    color TEXT NOT NULL DEFAULT '',
+    grp TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (chat_id, tag)
+);
+"""
+
+FTS_DDL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
+    name, caption, tags, note, folder, imdb_json,
+    content='items', content_rowid='id'
+);
+CREATE TRIGGER IF NOT EXISTS items_fts_ai AFTER INSERT ON items BEGIN
+    INSERT INTO items_fts(rowid, name, caption, tags, note, folder, imdb_json)
+    VALUES (new.id, new.name, new.caption, new.tags, new.note, new.folder, new.imdb_json);
+END;
+CREATE TRIGGER IF NOT EXISTS items_fts_ad AFTER DELETE ON items BEGIN
+    INSERT INTO items_fts(items_fts, rowid, name, caption, tags, note, folder, imdb_json)
+    VALUES ('delete', old.id, old.name, old.caption, old.tags, old.note, old.folder, old.imdb_json);
+END;
+CREATE TRIGGER IF NOT EXISTS items_fts_au AFTER UPDATE OF name, caption, tags, note, folder, imdb_json ON items BEGIN
+    INSERT INTO items_fts(items_fts, rowid, name, caption, tags, note, folder, imdb_json)
+    VALUES ('delete', old.id, old.name, old.caption, old.tags, old.note, old.folder, old.imdb_json);
+    INSERT INTO items_fts(rowid, name, caption, tags, note, folder, imdb_json)
+    VALUES (new.id, new.name, new.caption, new.tags, new.note, new.folder, new.imdb_json);
+END;
 """
 
 FOLDERS_DDL = """
@@ -102,6 +162,8 @@ FOLDER_BY_KIND = {
     "audio": "Music",
     "voice": "Voice notes",
     "document": "Documents",
+    "model": "3D models",
+    "cad": "CAD",
     "sticker": "Stickers",
     "gif": "GIFs",
     "other": "Other",
@@ -132,6 +194,8 @@ KIND_LABELS = {
     "audio": "Audio",
     "voice": "Voice note",
     "document": "Document",
+    "model": "3D model",
+    "cad": "CAD file",
     "sticker": "Sticker",
     "gif": "GIF",
     "other": "File",
@@ -223,6 +287,17 @@ def row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
     return data
 
 
+_REVISION_TAIL = re.compile(r"[\s._-]+(?:v|rev|r)?[\s._-]*\d{1,3}$", re.IGNORECASE)
+
+
+def revision_stem(name: str) -> str:
+    """Base name shared by revision siblings, or "" when there is no marker."""
+    match = _REVISION_TAIL.search(name or "")
+    if not match or match.start() == 0:
+        return ""
+    return (name or "")[: match.start()].strip(" ._-")
+
+
 class Catalog:
     def __init__(self, path: Path, chat_id: Optional[int] = None):
         self.path = Path(path)
@@ -256,6 +331,10 @@ class Catalog:
                 "has_thumb": "INTEGER NOT NULL DEFAULT 1",
                 "play_pos": "REAL NOT NULL DEFAULT 0",
                 "played_at": "TEXT NOT NULL DEFAULT ''",
+                "imdb_id": "TEXT NOT NULL DEFAULT ''",
+                "imdb_json": "TEXT NOT NULL DEFAULT ''",
+                "imdb_poster_version": "INTEGER NOT NULL DEFAULT 0",
+                "meta_json": "TEXT NOT NULL DEFAULT ''",
             }
             for name, ddl in additions.items():
                 if name not in columns:
@@ -287,10 +366,32 @@ class Catalog:
                         conn.execute(f"ALTER TABLE folders ADD COLUMN {name} {ddl}")
             conn.execute("UPDATE items SET folder = 'Other' WHERE folder = ''")
             conn.execute("DELETE FROM folders WHERE name = ''")
+            # Files indexed before the 3D/CAD families existed are reclassified
+            # from their extension so the new type filter finds them.
+            rows = conn.execute(
+                "SELECT id, name, kind FROM items WHERE kind IN ('document', 'other', '')"
+            ).fetchall()
+            changes = []
+            for row in rows:
+                new_kind = filetypes.classify(row["name"] or "", row["kind"] or "")
+                if new_kind != row["kind"]:
+                    changes.append((new_kind, row["id"]))
+            if changes:
+                conn.executemany("UPDATE items SET kind = ? WHERE id = ?", changes)
+            self.has_fts = False
+            try:
+                conn.executescript(FTS_DDL)
+                conn.execute("INSERT INTO items_fts(items_fts) VALUES('rebuild')")
+                self.has_fts = True
+            except sqlite3.Error:
+                # Older SQLite builds may lack FTS5; plain LIKE search still works.
+                self.has_fts = False
 
     @staticmethod
     def _upsert_values(item: Dict[str, Any]) -> Tuple[Any, ...]:
-        kind = str(item.get("kind") or "other")
+        kind = filetypes.classify(
+            str(item.get("name") or ""), str(item.get("kind") or "other")
+        )
         folder = clean_folder_path(
             str(item.get("folder") or default_folder(kind)), "Other"
         )
@@ -338,8 +439,8 @@ class Catalog:
             ).fetchone()
         return row_to_dict(row) if row else None
 
-    @staticmethod
     def _where(
+        self,
         q: str = "",
         kind: str = "",
         folder: str = "",
@@ -355,6 +456,8 @@ class Catalog:
         has_note: bool = False,
         recursive: bool = False,
         performer: Optional[int] = None,
+        collection: Optional[int] = None,
+        watching: bool = False,
     ) -> Tuple[str, List[Any]]:
         if hidden_only:
             clauses: List[str] = ["items.hidden = 1"]
@@ -367,18 +470,42 @@ class Catalog:
             clauses.append("items.chat_id = ?")
             params.append(int(chat_id))
         terms = [t.lstrip("#").lower() for t in (q or "").split()]
-        for term in [t for t in terms if t]:
-            like = f"%{_like(term)}%"
-            clauses.append(
-                "(items.name LIKE ? ESCAPE '\\' OR items.caption LIKE ? ESCAPE '\\'"
-                " OR items.tags LIKE ? ESCAPE '\\' OR items.folder LIKE ? ESCAPE '\\'"
-                " OR items.note LIKE ? ESCAPE '\\' OR EXISTS ("
-                "SELECT 1 FROM item_performers ipp"
-                " JOIN performers pf ON pf.id = ipp.performer_id"
-                " WHERE ipp.item_id = items.id AND (pf.name LIKE ? ESCAPE '\\'"
-                " OR pf.aliases LIKE ? ESCAPE '\\')))"
-            )
-            params += [like] * 7
+        terms = [t for t in terms if t]
+        searched = False
+        if terms and getattr(self, "has_fts", False):
+            words = []
+            for term in terms:
+                cleaned = re.sub(r"[^0-9a-z_\u0080-\uffff]+", " ", term).strip()
+                words.extend(cleaned.split())
+            if words:
+                clauses.append(
+                    "(" + " AND ".join(
+                        "(items.id IN (SELECT rowid FROM items_fts"
+                        " WHERE items_fts MATCH ?) OR EXISTS ("
+                        "SELECT 1 FROM item_performers ipp"
+                        " JOIN performers pf ON pf.id = ipp.performer_id"
+                        " WHERE ipp.item_id = items.id AND (pf.name LIKE ? ESCAPE '\\'"
+                        " OR pf.aliases LIKE ? ESCAPE '\\')))"
+                        for _ in words
+                    ) + ")"
+                )
+                for word in words:
+                    like = f"%{_like(word)}%"
+                    params += [word + "*", like, like]
+                searched = True
+        if terms and not searched:
+            for term in terms:
+                like = f"%{_like(term)}%"
+                clauses.append(
+                    "(items.name LIKE ? ESCAPE '\\' OR items.caption LIKE ? ESCAPE '\\'"
+                    " OR items.tags LIKE ? ESCAPE '\\' OR items.folder LIKE ? ESCAPE '\\'"
+                    " OR items.note LIKE ? ESCAPE '\\' OR EXISTS ("
+                    "SELECT 1 FROM item_performers ipp"
+                    " JOIN performers pf ON pf.id = ipp.performer_id"
+                    " WHERE ipp.item_id = items.id AND (pf.name LIKE ? ESCAPE '\\'"
+                    " OR pf.aliases LIKE ? ESCAPE '\\')))"
+                )
+                params += [like] * 7
         if kind and kind != "all":
             clauses.append("items.kind = ?")
             params.append(kind)
@@ -423,6 +550,14 @@ class Catalog:
                 " WHERE ipf.item_id = items.id AND ipf.performer_id = ?)"
             )
             params.append(int(performer))
+        if collection:
+            clauses.append(
+                "items.id IN (SELECT item_id FROM collection_items"
+                " WHERE collection_id = ?)"
+            )
+            params.append(int(collection))
+        if watching:
+            clauses.append("items.play_pos > 0")
         return " AND ".join(clauses), params
 
     def list(
@@ -446,13 +581,19 @@ class Catalog:
         has_note: bool = False,
         recursive: bool = False,
         performer: Optional[int] = None,
+        collection: Optional[int] = None,
+        watching: bool = False,
     ) -> Dict[str, Any]:
         where, params = self._where(
             q, kind, folder, tag, favorite, include_hidden, hidden_only, chat_id,
             min_size, max_size, after, before, has_note, recursive, performer,
+            collection, watching,
         )
         column = SORT_COLUMNS.get(sort, SORT_COLUMNS["date"])
         order = "DESC" if str(direction).lower() == "desc" else "ASC"
+        if watching:
+            column = "COALESCE(NULLIF(items.played_at, ''), items.tg_date)"
+            order = "DESC"
         limit = max(1, min(int(limit or 100), 500))
         offset = max(0, int(offset or 0))
         with self.connect() as conn:
@@ -826,14 +967,78 @@ class Catalog:
             params.append(int(chat_id))
         with self.connect() as conn:
             rows = conn.execute(sql, params).fetchall()
+            meta_rows = conn.execute(
+                "SELECT tag, color, grp FROM tag_meta"
+                + (" WHERE chat_id = ?" if chat_id is not None else ""),
+                ((int(chat_id),) if chat_id is not None else ()),
+            ).fetchall()
         counts: Dict[str, int] = {}
         for row in rows:
             for tag in row["tags"].split():
                 counts[tag] = counts.get(tag, 0) + 1
-        return [
-            {"tag": tag, "count": count}
-            for tag, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        meta = {
+            str(row["tag"]).lower(): {
+                "name": str(row["tag"]),
+                "color": row["color"] or "",
+                "group": row["grp"] or "",
+            }
+            for row in meta_rows
+        }
+        entries = [
+            {
+                "tag": tag,
+                "count": count,
+                "color": meta.get(tag.lower(), {}).get("color", ""),
+                "group": meta.get(tag.lower(), {}).get("group", ""),
+            }
+            for tag, count in counts.items()
         ]
+        # Keep colour/group assignments for tags that currently have no files so
+        # they come back when the tag is used again.
+        entries += [
+            {
+                "tag": entry["name"],
+                "count": 0,
+                "color": entry["color"],
+                "group": entry["group"],
+            }
+            for key, entry in meta.items()
+            if key not in {tag.lower() for tag in counts}
+        ]
+        return sorted(
+            entries,
+            key=lambda entry: (
+                entry["group"].lower(),
+                -entry["count"],
+                entry["tag"].lower(),
+            ),
+        )
+
+    def set_tag_meta(
+        self, tag: str, chat_id: Optional[int], color: str = "", group: str = ""
+    ) -> Dict[str, Any]:
+        name = str(tag or "").strip().lstrip("#")
+        if not name:
+            raise ValueError("A tag name is required.")
+        color = str(color or "").strip()[:7]
+        if color and not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            color = ""
+        group = str(group or "").strip()[:40]
+        scope = int(chat_id or 0)
+        with self.connect() as conn:
+            if not color and not group:
+                conn.execute(
+                    "DELETE FROM tag_meta WHERE chat_id = ? AND tag = ? COLLATE NOCASE",
+                    (scope, name),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO tag_meta (chat_id, tag, color, grp) VALUES (?, ?, ?, ?)"
+                    " ON CONFLICT(chat_id, tag) DO UPDATE SET"
+                    " color = excluded.color, grp = excluded.grp",
+                    (scope, name, color, group),
+                )
+        return {"tag": name, "color": color, "group": group}
 
     def kinds(self, chat_id: Optional[int] = None) -> List[Dict[str, Any]]:
         sql = "SELECT kind, COUNT(*) AS n FROM items WHERE hidden = 0"
@@ -869,7 +1074,9 @@ class Catalog:
         with self.connect() as conn:
             row = conn.execute(
                 f"SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS size,"
-                f" COALESCE(SUM(favorite), 0) AS favorites FROM items {clause}",
+                f" COALESCE(SUM(favorite), 0) AS favorites,"
+                f" COALESCE(SUM(CASE WHEN play_pos > 0 THEN 1 ELSE 0 END), 0) AS playing"
+                f" FROM items {clause}",
                 params,
             ).fetchone()
             last = conn.execute(
@@ -884,8 +1091,290 @@ class Catalog:
             "count": int(row["n"]),
             "size": int(row["size"]),
             "favorites": int(row["favorites"]),
+            "playing": int(row["playing"]),
             "hidden": int(hidden["n"]),
             "last_sync": last["added"] if last else None,
+        }
+
+    # ------------------------------------------------------------ collections
+    def collections(self, chat_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        scope = int(chat_id or 0)
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT c.id, c.name, c.icon, c.note, c.created_at,"
+                " (SELECT COUNT(*) FROM collection_items ci"
+                "  JOIN items i ON i.id = ci.item_id"
+                "  WHERE ci.collection_id = c.id AND i.hidden = 0) AS n,"
+                " (SELECT COALESCE(SUM(i.size), 0) FROM collection_items ci"
+                "  JOIN items i ON i.id = ci.item_id"
+                "  WHERE ci.collection_id = c.id AND i.hidden = 0) AS size,"
+                " (SELECT i.id FROM collection_items ci"
+                "  JOIN items i ON i.id = ci.item_id"
+                "  WHERE ci.collection_id = c.id AND i.hidden = 0 AND i.has_thumb = 1"
+                "  ORDER BY ci.added_at DESC LIMIT 1) AS cover"
+                " FROM collections c WHERE c.chat_id = ?"
+                " ORDER BY c.name COLLATE NOCASE",
+                (scope,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def collection(self, collection_id: int, chat_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM collections WHERE id = ? AND chat_id = ?",
+                (int(collection_id), int(chat_id or 0)),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def create_collection(
+        self, name: str, chat_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        value = str(name or "").strip()[:80]
+        if not value:
+            raise ValueError("Give the collection a name.")
+        scope = int(chat_id or 0)
+        with self.connect() as conn:
+            try:
+                cur = conn.execute(
+                    "INSERT INTO collections (chat_id, name) VALUES (?, ?)",
+                    (scope, value),
+                )
+            except sqlite3.IntegrityError:
+                raise ValueError("A collection with that name already exists.")
+            row = conn.execute(
+                "SELECT * FROM collections WHERE id = ?", (int(cur.lastrowid),)
+            ).fetchone()
+        result = dict(row)
+        result.update({"n": 0, "size": 0, "cover": None})
+        return result
+
+    def rename_collection(
+        self, collection_id: int, name: str, chat_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        value = str(name or "").strip()[:80]
+        if not value:
+            raise ValueError("Give the collection a name.")
+        with self.connect() as conn:
+            try:
+                cur = conn.execute(
+                    "UPDATE collections SET name = ? WHERE id = ? AND chat_id = ?",
+                    (value, int(collection_id), int(chat_id or 0)),
+                )
+            except sqlite3.IntegrityError:
+                raise ValueError("A collection with that name already exists.")
+            if cur.rowcount == 0:
+                raise ValueError("Collection not found.")
+        return {"id": int(collection_id), "name": value}
+
+    def delete_collection(self, collection_id: int, chat_id: Optional[int] = None) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM collections WHERE id = ? AND chat_id = ?",
+                (int(collection_id), int(chat_id or 0)),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                "DELETE FROM collection_items WHERE collection_id = ?",
+                (int(collection_id),),
+            )
+            conn.execute("DELETE FROM collections WHERE id = ?", (int(collection_id),))
+        return True
+
+    def collection_add(
+        self,
+        collection_id: int,
+        item_ids: List[int],
+        chat_id: Optional[int] = None,
+        remove: bool = False,
+    ) -> int:
+        scope = int(chat_id or 0)
+        ids = sorted({int(value) for value in item_ids})
+        if not ids:
+            return 0
+        with self.connect() as conn:
+            owner = conn.execute(
+                "SELECT id FROM collections WHERE id = ? AND chat_id = ?",
+                (int(collection_id), scope),
+            ).fetchone()
+            if owner is None:
+                raise ValueError("Collection not found.")
+            marks = ",".join("?" * len(ids))
+            owned = conn.execute(
+                f"SELECT COUNT(*) AS n FROM items WHERE chat_id = ? AND id IN ({marks})",
+                (scope, *ids),
+            ).fetchone()
+            if int(owned["n"]) != len(ids):
+                raise ValueError("Some files are not in this vault.")
+            if remove:
+                conn.executemany(
+                    "DELETE FROM collection_items WHERE collection_id = ? AND item_id = ?",
+                    [(int(collection_id), item_id) for item_id in ids],
+                )
+                return len(ids)
+            conn.executemany(
+                "INSERT OR IGNORE INTO collection_items (collection_id, item_id)"
+                " VALUES (?, ?)",
+                [(int(collection_id), item_id) for item_id in ids],
+            )
+            return len(ids)
+
+    def item_collections(
+        self, item_id: int, chat_id: Optional[int] = None
+    ) -> List[int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT ci.collection_id FROM collection_items ci"
+                " JOIN collections c ON c.id = ci.collection_id"
+                " WHERE ci.item_id = ? AND c.chat_id = ?",
+                (int(item_id), int(chat_id or 0)),
+            ).fetchall()
+        return [int(row["collection_id"]) for row in rows]
+
+    # -------------------------------------------------------------- saved views
+    def views(self, chat_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, name, data, created_at FROM saved_views"
+                " WHERE chat_id = ? ORDER BY name COLLATE NOCASE",
+                (int(chat_id or 0),),
+            ).fetchall()
+        entries = []
+        for row in rows:
+            try:
+                data = json.loads(row["data"] or "{}")
+            except ValueError:
+                data = {}
+            entries.append(
+                {"id": row["id"], "name": row["name"], "data": data,
+                 "created_at": row["created_at"]}
+            )
+        return entries
+
+    def create_view(
+        self, name: str, data: Dict[str, Any], chat_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        value = str(name or "").strip()[:80]
+        if not value:
+            raise ValueError("Name the view.")
+        with self.connect() as conn:
+            try:
+                cur = conn.execute(
+                    "INSERT INTO saved_views (chat_id, name, data) VALUES (?, ?, ?)",
+                    (int(chat_id or 0), value, json.dumps(data or {})),
+                )
+            except sqlite3.IntegrityError:
+                raise ValueError("A view with that name already exists.")
+            row = conn.execute(
+                "SELECT id, name, data, created_at FROM saved_views WHERE id = ?",
+                (int(cur.lastrowid),),
+            ).fetchone()
+        return {"id": row["id"], "name": row["name"],
+                "data": json.loads(row["data"]), "created_at": row["created_at"]}
+
+    def delete_view(self, view_id: int, chat_id: Optional[int] = None) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM saved_views WHERE id = ? AND chat_id = ?",
+                (int(view_id), int(chat_id or 0)),
+            )
+            return cur.rowcount > 0
+
+    # ------------------------------------------------------- reports and extras
+    def revisions(
+        self, item: Dict[str, Any], chat_id: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        name = str(item.get("name") or "")
+        stem, ext = os.path.splitext(name)
+        if not ext:
+            return []
+        base = revision_stem(stem)
+        if not base:
+            return []
+        scope = int(item.get("chat_id", chat_id or 0))
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM items WHERE chat_id = ? AND hidden = 0"
+                " AND lower(name) LIKE ? ESCAPE '\\' AND id != ?"
+                " ORDER BY name COLLATE NOCASE LIMIT 200",
+                (scope, f"%{_like(ext.lower())}", int(item["id"])),
+            ).fetchall()
+        matches = [
+            row for row in rows
+            if revision_stem(os.path.splitext(row["name"])[0]).lower() == base.lower()
+        ]
+        return [row_to_dict(row) for row in matches[:20]]
+
+    def duplicates(self, chat_id: Optional[int] = None, limit: int = 100) -> Dict[str, Any]:
+        clause = "WHERE hidden = 0 AND size > 0"
+        params: List[Any] = []
+        if chat_id is not None:
+            clause += " AND chat_id = ?"
+            params.append(int(chat_id))
+        with self.connect() as conn:
+            groups = conn.execute(
+                f"SELECT lower(name) AS key, size, COUNT(*) AS n,"
+                f" SUM(size) AS total FROM items {clause}"
+                f" GROUP BY lower(name), size HAVING COUNT(*) > 1"
+                f" ORDER BY COUNT(*) * size DESC LIMIT ?",
+                (*params, max(1, min(int(limit), 500))),
+            ).fetchall()
+            output = []
+            wasted = 0
+            for group in groups:
+                rows = conn.execute(
+                    f"SELECT * FROM items WHERE lower(name) = ? AND size = ?"
+                    f" AND hidden = 0"
+                    + (" AND chat_id = ?" if chat_id is not None else "")
+                    + " ORDER BY COALESCE(tg_date, added_at) DESC",
+                    (group["key"], group["size"],
+                     *((int(chat_id),) if chat_id is not None else ())),
+                ).fetchall()
+                items = [row_to_dict(row) for row in rows]
+                wasted += int(group["size"]) * max(0, len(items) - 1)
+                output.append(
+                    {
+                        "name": items[0]["name"] if items else group["key"],
+                        "size": int(group["size"]),
+                        "count": len(items),
+                        "items": items,
+                    }
+                )
+        return {"groups": output, "wasted": wasted, "group_count": len(output)}
+
+    def library_stats(self, chat_id: Optional[int] = None) -> Dict[str, Any]:
+        clause = "WHERE hidden = 0"
+        params: List[Any] = []
+        if chat_id is not None:
+            clause += " AND chat_id = ?"
+            params.append(int(chat_id))
+        with self.connect() as conn:
+            breakdown = conn.execute(
+                f"SELECT kind, COUNT(*) AS n, COALESCE(SUM(size), 0) AS size"
+                f" FROM items {clause} GROUP BY kind ORDER BY size DESC",
+                params,
+            ).fetchall()
+            largest = conn.execute(
+                f"SELECT * FROM items {clause} ORDER BY size DESC LIMIT 12",
+                params,
+            ).fetchall()
+            collections = conn.execute(
+                "SELECT COUNT(*) AS n FROM collections WHERE chat_id = ?",
+                (int(chat_id or 0),),
+            ).fetchone()
+            views = conn.execute(
+                "SELECT COUNT(*) AS n FROM saved_views WHERE chat_id = ?",
+                (int(chat_id or 0),),
+            ).fetchone()
+        return {
+            "kinds": [
+                {"kind": row["kind"], "label": KIND_LABELS.get(row["kind"], "File"),
+                 "count": int(row["n"]), "size": int(row["size"])}
+                for row in breakdown
+            ],
+            "largest": [row_to_dict(row) for row in largest],
+            "collections": int(collections["n"]),
+            "views": int(views["n"]),
         }
 
     STAR_SELECT = """
@@ -960,6 +1449,16 @@ class Catalog:
             row = conn.execute(
                 self.STAR_SELECT + " WHERE p.id = ? AND p.chat_id = ?",
                 (int(star_id), int(chat_id or 0)),
+            ).fetchone()
+        return self._star_dict(row) if row else None
+
+    def performer_by_name(
+        self, chat_id: Optional[int], name: str
+    ) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                self.STAR_SELECT + " WHERE p.chat_id = ? AND p.name = ? COLLATE NOCASE",
+                (int(chat_id or 0), str(name or "").strip()),
             ).fetchone()
         return self._star_dict(row) if row else None
 
@@ -1147,6 +1646,7 @@ class Catalog:
             "name", "folder", "tags", "favorite", "hidden", "caption", "note",
             "name_source", "folder_source", "tags_source", "fav_source",
             "has_thumb", "thumb_version", "play_pos", "played_at",
+            "imdb_id", "imdb_json", "imdb_poster_version", "meta_json",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
