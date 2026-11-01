@@ -117,11 +117,16 @@ this PC** ticked (stop it on the first PC first). Setup never overwrites an exis
 - **Bulk actions** — Ctrl-click, Shift-click or Ctrl+A, then Download ZIP, Favorite,
   Move, Copy links or Delete (up to 300 files at once)
 - **Themes** — System, Light, Dark, Mica, Acrylic
+- **Clear cache** — the bin button next to the lock deletes the local stream cache,
+  auto thumbnails, storyboards and poster images (your picked covers and star
+  portraits stay). Files you open again are re-fetched from Telegram as needed.
 - **Keyboard** — arrows move, Enter opens, F2 renames, Delete removes, Ctrl+F
   searches, Alt+←/→ goes back/forward. In the viewer: Space/K play-pause, ←/→ 5 s,
   J/L 10 s, M mute, F fullscreen, N/P next or previous file
-- **Automatic backup** — on close and after every sync, the whole library is zipped
-  into the vault channel (newest 10 kept, older copies deleted automatically, hidden from the file list)
+- **Automatic backup** — on close and after every sync, the index, settings and your
+  picked covers/star portraits are zipped into the vault channel (newest 10 kept,
+  older copies deleted automatically, hidden from the file list). Thumbnails and
+  posters are rebuilt on demand instead of being uploaded.
 - **Multiple vaults** — keep different content in separate private channels. Click the
   vault name in the title bar to switch, scan for vaults, or create a new one: enter a
   name and the app makes the private channel in Telegram for you. The storage bot is

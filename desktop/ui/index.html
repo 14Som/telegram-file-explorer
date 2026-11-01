@@ -8,7 +8,8 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/vendor/videojs/video-js.min.css">
   <link rel="stylesheet" href="/static/vendor/viewerjs/viewer.min.css">
-  <link rel="stylesheet" href="/static/styles.css?v=13">
+  <link rel="stylesheet" href="/static/vendor/overlayscrollbars/overlayscrollbars.min.css">
+  <link rel="stylesheet" href="/static/styles.css?v=17">
 </head>
 <body>
   <div class="app">
@@ -53,6 +54,7 @@
       </div>
       <div class="titlebar-actions">
         <button class="icon-btn" id="lockBtn" title="Lock the app" aria-label="Lock the app" hidden></button>
+        <button class="icon-btn" id="cacheBtn" title="Clear temporary files" aria-label="Clear temporary files" disabled></button>
         <button class="icon-btn" id="syncBtn" title="Sync with Telegram" aria-label="Sync with Telegram" disabled></button>
         <div class="upload-split">
           <button class="btn primary upload-main" id="uploadBtn" disabled>
@@ -481,7 +483,8 @@
   <script src="/static/vendor/three/loaders/PLYLoader.js"></script>
   <script src="/static/vendor/three/loaders/3MFLoader.js"></script>
   <script src="/static/vendor/three/controls/OrbitControls.js"></script>
+  <script src="/static/vendor/overlayscrollbars/overlayscrollbars.browser.es6.min.js"></script>
   <script src="/static/viewer3d.js?v=2"></script>
-  <script src="/static/app.js?v=13"></script>
+  <script src="/static/app.js?v=17"></script>
 </body>
 </html>

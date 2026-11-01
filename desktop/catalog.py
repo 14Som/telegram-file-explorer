@@ -6,10 +6,12 @@ references to channel messages so the UI can be fast and searchable.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,6 +59,18 @@ CREATE INDEX IF NOT EXISTS idx_items_name ON items(name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_items_folder ON items(folder COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_items_kind ON items(kind);
 CREATE INDEX IF NOT EXISTS idx_items_message ON items(message_id);
+CREATE INDEX IF NOT EXISTS idx_items_chat_date ON items(
+    chat_id, hidden, COALESCE(tg_date, added_at) DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_items_chat_size ON items(
+    chat_id, hidden, COALESCE(size, 0) DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_items_chat_name ON items(
+    chat_id, hidden, name COLLATE NOCASE, id);
+CREATE INDEX IF NOT EXISTS idx_items_chat_folder ON items(
+    chat_id, hidden, folder COLLATE NOCASE, name COLLATE NOCASE, id);
+CREATE INDEX IF NOT EXISTS idx_items_chat_kind ON items(
+    chat_id, hidden, kind, name COLLATE NOCASE, id);
+CREATE INDEX IF NOT EXISTS idx_items_chat_favorite ON items(
+    chat_id, hidden, favorite, COALESCE(tg_date, added_at) DESC);
 CREATE TABLE IF NOT EXISTS folders (
     chat_id INTEGER NOT NULL DEFAULT 0,
     name TEXT NOT NULL COLLATE NOCASE,
@@ -122,6 +136,11 @@ CREATE TABLE IF NOT EXISTS tag_meta (
     grp TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (chat_id, tag)
 );
+CREATE TABLE IF NOT EXISTS sync_state (
+    chat_id INTEGER PRIMARY KEY,
+    last_message_id INTEGER NOT NULL DEFAULT 0,
+    last_full_at TEXT NOT NULL DEFAULT ''
+);
 """
 
 FTS_DDL = """
@@ -182,6 +201,22 @@ SORT_COLUMNS = {
         " WHERE ipf.item_id = items.id), '~')"
     ),
 }
+
+# Sorts whose pages can skip straight past the last seen row. Each tuple lists
+# the ORDER BY expressions used as the cursor key; the row id is the final
+# tie-breaker. Sorts with computed columns (star, watching) use offset paging.
+SORT_KEYS = {
+    "name": ("items.name COLLATE NOCASE",),
+    "date": ("COALESCE(items.tg_date, items.added_at)",),
+    "size": ("COALESCE(items.size, 0)",),
+    "kind": ("items.kind", "items.name COLLATE NOCASE"),
+    "folder": ("items.folder COLLATE NOCASE", "items.name COLLATE NOCASE"),
+    "added": ("items.id",),
+}
+
+COUNT_CACHE_SECONDS = 5.0
+
+KIND_RANK = {"image": 0, "video": 1, "gif": 2}
 
 STAR_FIELDS = (
     "name", "aliases", "note", "country", "birthdate", "height",
@@ -302,6 +337,7 @@ class Catalog:
     def __init__(self, path: Path, chat_id: Optional[int] = None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._cache: Dict[Any, Tuple[float, Any]] = {}
         self.init(chat_id)
 
     @contextmanager
@@ -314,6 +350,9 @@ class Catalog:
             yield conn
             conn.commit()
         finally:
+            # Any write makes cached counts and folder totals stale.
+            if conn.total_changes:
+                self._cache.clear()
             conn.close()
 
     def init(self, chat_id: Optional[int] = None) -> None:
@@ -560,6 +599,65 @@ class Catalog:
             clauses.append("items.play_pos > 0")
         return " AND ".join(clauses), params
 
+    @staticmethod
+    def _encode_cursor(
+        sort: str, order: str, values: List[Any], item_id: int
+    ) -> str:
+        raw = json.dumps(
+            {"s": sort, "o": order, "v": values, "i": int(item_id)},
+            separators=(",", ":"),
+        )
+        return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_cursor(cursor: str) -> Optional[Dict[str, Any]]:
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+            data = json.loads(raw.decode("utf-8"))
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("v"), list):
+            return None
+        return data
+
+    @staticmethod
+    def _keyset_values(sort: str, row: sqlite3.Row) -> List[Any]:
+        if sort == "date":
+            return [row["tg_date"] or row["added_at"]]
+        if sort == "added":
+            return [int(row["id"])]
+        if sort == "size":
+            return [int(row["size"] or 0)]
+        if sort == "kind":
+            return [row["kind"], row["name"]]
+        if sort == "folder":
+            return [row["folder"], row["name"]]
+        return [row["name"]]
+
+    @staticmethod
+    def _keyset_clause(
+        keys: Tuple[str, ...], values: List[Any], item_id: int, order: str
+    ) -> Tuple[str, List[Any]]:
+        compare = "<" if order == "DESC" else ">"
+        clauses: List[str] = []
+        params: List[Any] = []
+        for index, key in enumerate(keys):
+            parts = []
+            for earlier in range(index):
+                parts.append(f"{keys[earlier]} = ?")
+                params.append(values[earlier])
+            parts.append(f"{key} {compare} ?")
+            params.append(values[index])
+            clauses.append("(" + " AND ".join(parts) + ")")
+        if keys[-1] != "items.id":
+            parts = [f"{key} = ?" for key in keys]
+            params.extend(values)
+            parts.append(f"items.id {compare} ?")
+            params.append(int(item_id))
+            clauses.append("(" + " AND ".join(parts) + ")")
+        return "(" + " OR ".join(clauses) + ")", params
+
     def list(
         self,
         q: str = "",
@@ -583,6 +681,7 @@ class Catalog:
         performer: Optional[int] = None,
         collection: Optional[int] = None,
         watching: bool = False,
+        cursor: str = "",
     ) -> Dict[str, Any]:
         where, params = self._where(
             q, kind, folder, tag, favorite, include_hidden, hidden_only, chat_id,
@@ -596,27 +695,61 @@ class Catalog:
             order = "DESC"
         limit = max(1, min(int(limit or 100), 500))
         offset = max(0, int(offset or 0))
+        keys = None if watching else SORT_KEYS.get(sort)
+        page_where, page_params = where, list(params)
+        next_cursor = ""
+        if keys and cursor:
+            parsed = self._decode_cursor(cursor)
+            if (
+                parsed
+                and parsed.get("s") == sort
+                and parsed.get("o") == order
+                and len(parsed.get("v") or []) == len(keys)
+            ):
+                clause, extra = self._keyset_clause(
+                    keys, parsed["v"], int(parsed.get("i") or 0), order
+                )
+                page_where = f"({where}) AND {clause}"
+                page_params = list(params) + extra
+                offset = 0
+        if keys:
+            order_exprs = list(keys)
+            if order_exprs[-1] != "items.id":
+                order_exprs.append("items.id")
+            order_sql = ", ".join(f"{expr} {order}" for expr in order_exprs)
+        else:
+            order_sql = f"{column} {order}, items.id {order}"
+        cache_key = ("list", where, tuple(params))
+        now = time.monotonic()
+        cached = self._cache.get(cache_key)
         with self.connect() as conn:
-            total = int(
-                conn.execute(f"SELECT COUNT(*) AS n FROM items WHERE {where}", params)
-                .fetchone()["n"]
-            )
+            if cached is not None and now - cached[0] <= COUNT_CACHE_SECONDS:
+                total, total_size = cached[1]
+            else:
+                totals = conn.execute(
+                    f"SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS size"
+                    f" FROM items WHERE {where}",
+                    params,
+                ).fetchone()
+                total, total_size = int(totals["n"]), int(totals["size"])
+                self._cache[cache_key] = (now, (total, total_size))
             rows = conn.execute(
-                f"SELECT * FROM items WHERE {where} ORDER BY {column} {order}"
+                f"SELECT * FROM items WHERE {page_where} ORDER BY {order_sql}"
                 " LIMIT ? OFFSET ?",
-                (*params, limit, offset),
+                (*page_params, limit, offset),
             ).fetchall()
-            totals = conn.execute(
-                f"SELECT COALESCE(SUM(size), 0) AS size, COUNT(*) AS n"
-                f" FROM items WHERE {where}",
-                params,
-            ).fetchone()
+        if keys and len(rows) == limit:
+            last = rows[-1]
+            next_cursor = self._encode_cursor(
+                sort, order, self._keyset_values(sort, last), int(last["id"])
+            )
         return {
             "items": [row_to_dict(row) for row in rows],
             "total": total,
             "offset": offset,
             "limit": limit,
-            "total_size": int(totals["size"]),
+            "total_size": total_size,
+            "next_cursor": next_cursor,
         }
 
     @staticmethod
@@ -632,6 +765,11 @@ class Catalog:
             )
 
     def folders(self, chat_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        cache_key = ("folders", chat_id)
+        now = time.monotonic()
+        cached = self._cache.get(cache_key)
+        if cached is not None and now - cached[0] <= COUNT_CACHE_SECONDS:
+            return [dict(entry) for entry in cached[1]]
         clause = "WHERE hidden = 0"
         params: List[Any] = []
         if chat_id is not None:
@@ -693,60 +831,87 @@ class Catalog:
                     "note": meta.get(path, {}).get("note", ""),
                 }
             )
-        return sorted(entries, key=lambda value: value["folder"].lower())
+        entries = sorted(entries, key=lambda value: value["folder"].lower())
+        self._cache[cache_key] = (now, entries)
+        return [dict(entry) for entry in entries]
 
     def folder_covers(
         self,
         chat_id: Optional[int] = None,
         per_folder: int = 4,
         has_thumb_file: Optional[Callable[[int], bool]] = None,
+        paths: Optional[List[str]] = None,
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """Cover items per folder, keyed by lowercased folder path.
+        """Cover items for the requested folders, keyed by lowercased path.
 
         A folder's covers include files from its subfolders, mirroring the
         recursive file counts shown in the sidebar. Images come first, then
-        videos, newest first; only thumbnails already cached on disk are
-        preferred so building the nav never talks to Telegram.
+        videos and GIFs, newest first. Only the requested folders are read, so
+        the nav never has to walk the whole library.
         """
+        if paths is None:
+            wanted = [entry["folder"] for entry in self.folders(chat_id)]
+        else:
+            wanted = [clean_folder_path(path, "") for path in paths]
+        wanted = list(dict.fromkeys(path for path in wanted if path))
+        covers: Dict[str, List[Dict[str, Any]]] = {}
+        if not wanted:
+            return covers
+        limit = max(per_folder * 3, per_folder)
         clause = "WHERE hidden = 0 AND has_thumb = 1"
         params: List[Any] = []
         if chat_id is not None:
             clause += " AND chat_id = ?"
             params.append(int(chat_id))
+        select = (
+            "SELECT id, kind, thumb_version, tg_date, added_at FROM items"
+        )
+        order = (
+            " ORDER BY CASE kind WHEN 'image' THEN 0 WHEN 'video' THEN 1"
+            " WHEN 'gif' THEN 2 ELSE 3 END,"
+            " COALESCE(tg_date, added_at) DESC, id DESC LIMIT ?"
+        )
         with self.connect() as conn:
-            rows = conn.execute(
-                f"SELECT id, folder, kind, thumb_version FROM items {clause}"
-                " ORDER BY CASE kind WHEN 'image' THEN 0 WHEN 'video' THEN 1"
-                " WHEN 'gif' THEN 2 ELSE 3 END,"
-                " COALESCE(tg_date, added_at) DESC, id DESC",
-                params,
-            ).fetchall()
-        buckets: Dict[str, List[Dict[str, Any]]] = {}
-        limit = max(per_folder * 3, per_folder)
-        for row in rows:
-            path = clean_folder_path(row["folder"], "")
-            if not path:
-                continue
-            item = {
-                "id": int(row["id"]),
-                "kind": row["kind"] or "other",
-                "version": int(row["thumb_version"] or 0),
-            }
-            parts = path.split("/")
-            for index in range(len(parts), 0, -1):
-                prefix = "/".join(parts[:index]).lower()
-                bucket = buckets.setdefault(prefix, [])
-                if len(bucket) < limit:
-                    bucket.append(item)
-        covers: Dict[str, List[Dict[str, Any]]] = {}
-        for path, items in buckets.items():
-            if has_thumb_file is not None:
-                cached = [item for item in items if has_thumb_file(item["id"])]
-                picked = cached[:per_folder] or items[:per_folder]
-            else:
-                picked = items[:per_folder]
-            if picked:
-                covers[path] = picked
+            for path in wanted:
+                rows = list(
+                    conn.execute(
+                        f"{select} {clause}"
+                        " AND folder = ? COLLATE NOCASE" + order,
+                        (*params, path, limit),
+                    ).fetchall()
+                )
+                rows += conn.execute(
+                    f"{select} INDEXED BY idx_items_chat_folder {clause}"
+                    " AND folder >= ? AND folder < ?" + order,
+                    (*params, f"{path}/", f"{path}0", limit),
+                ).fetchall()
+                seen = set()
+                merged = []
+                for row in rows:
+                    if int(row["id"]) in seen:
+                        continue
+                    seen.add(int(row["id"]))
+                    merged.append(row)
+                merged.sort(key=lambda row: int(row["id"]), reverse=True)
+                merged.sort(
+                    key=lambda row: row["tg_date"] or row["added_at"], reverse=True
+                )
+                merged.sort(key=lambda row: KIND_RANK.get(row["kind"], 3))
+                items = [
+                    {
+                        "id": int(row["id"]),
+                        "kind": row["kind"] or "other",
+                        "version": int(row["thumb_version"] or 0),
+                    }
+                    for row in merged
+                ]
+                if has_thumb_file is not None:
+                    cached = [item for item in items if has_thumb_file(item["id"])]
+                    picked = cached[:per_folder] or items[:per_folder]
+                else:
+                    picked = items[:per_folder]
+                if picked:
+                    covers[path.lower()] = picked
         return covers
 
     def folder_info(
@@ -1742,6 +1907,57 @@ class Catalog:
                 "SELECT message_id FROM items WHERE chat_id = ?", (chat_id,)
             ).fetchall()
         return {int(row["message_id"]) for row in rows}
+
+    def sync_cursor(self, chat_id: int) -> Dict[str, Any]:
+        """Last channel message already indexed, plus the last full scan time."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT last_message_id, last_full_at FROM sync_state"
+                " WHERE chat_id = ?",
+                (int(chat_id),),
+            ).fetchone()
+        if row is None:
+            return {"last_message_id": 0, "last_full_at": ""}
+        return {
+            "last_message_id": int(row["last_message_id"] or 0),
+            "last_full_at": row["last_full_at"] or "",
+        }
+
+    def set_sync_cursor(
+        self, chat_id: int, last_message_id: int, full: bool = False
+    ) -> None:
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds") if full else ""
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO sync_state (chat_id, last_message_id, last_full_at)"
+                " VALUES (?, ?, ?)"
+                " ON CONFLICT(chat_id) DO UPDATE SET"
+                " last_message_id = excluded.last_message_id,"
+                " last_full_at = CASE WHEN excluded.last_full_at != ''"
+                " THEN excluded.last_full_at ELSE sync_state.last_full_at END",
+                (int(chat_id), int(last_message_id), stamp),
+            )
+
+    def hide_missing(self, chat_id: int, seen: set) -> int:
+        """Hide catalog rows whose channel messages no longer exist."""
+        ids = [(int(message_id),) for message_id in seen]
+        with self.connect() as conn:
+            conn.execute(
+                "CREATE TEMP TABLE IF NOT EXISTS scan_seen"
+                " (message_id INTEGER PRIMARY KEY)"
+            )
+            conn.execute("DELETE FROM scan_seen")
+            conn.executemany(
+                "INSERT OR IGNORE INTO scan_seen (message_id) VALUES (?)", ids
+            )
+            cur = conn.execute(
+                "UPDATE items SET hidden = 1 WHERE chat_id = ? AND hidden = 0"
+                " AND message_id NOT IN (SELECT message_id FROM scan_seen)",
+                (int(chat_id),),
+            )
+            removed = cur.rowcount
+            conn.execute("DELETE FROM scan_seen")
+        return max(0, removed)
 
     def import_from_bot(self, bot_db: Path, chat_id: int) -> int:
         """Adopt names, categories, tags and favorites from the bot's index."""

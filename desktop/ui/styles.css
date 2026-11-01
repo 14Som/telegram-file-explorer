@@ -194,6 +194,70 @@ button { cursor: pointer; }
 a { color: var(--accent); }
 ::selection { background: color-mix(in srgb, var(--accent) 26%, transparent); }
 
+/* ---------------------------------------------------------- scrollbars */
+/* Fallback for areas OverlayScrollbars does not manage (menus, selects). */
+::-webkit-scrollbar {
+  width: 13px;
+  height: 13px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  min-height: 48px;
+  min-width: 48px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .30), rgba(255, 255, 255, 0) 46%) padding-box,
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--accent) 40%, transparent),
+      color-mix(in srgb, var(--accent) 20%, transparent)) padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .34), rgba(255, 255, 255, 0) 46%) padding-box,
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--accent) 82%, transparent),
+      color-mix(in srgb, var(--accent-strong) 64%, transparent)) padding-box;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+::-webkit-scrollbar-thumb:active {
+  background:
+    linear-gradient(180deg,
+      var(--accent),
+      color-mix(in srgb, var(--accent-strong) 86%, var(--bg))) padding-box;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+
+/* OverlayScrollbars (github.com/KingSora/OverlayScrollbars) themed to match. */
+.os-scrollbar {
+  --os-size: 13px;
+  --os-padding-perpendicular: 3px;
+  --os-padding-axis: 3px;
+  --os-track-border-radius: 999px;
+  --os-handle-border-radius: 999px;
+  --os-handle-min-size: 48px;
+  --os-handle-interactive-area-offset: 3px;
+  --os-track-bg: transparent;
+  --os-track-bg-hover: transparent;
+  --os-track-bg-active: transparent;
+  --os-handle-bg:
+    linear-gradient(180deg, rgba(255, 255, 255, .30), rgba(255, 255, 255, 0) 46%),
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--accent) 46%, transparent),
+      color-mix(in srgb, var(--accent) 22%, transparent));
+  --os-handle-bg-hover:
+    linear-gradient(180deg, rgba(255, 255, 255, .34), rgba(255, 255, 255, 0) 46%),
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--accent) 88%, transparent),
+      color-mix(in srgb, var(--accent-strong) 68%, transparent));
+  --os-handle-bg-active:
+    linear-gradient(180deg, var(--accent), var(--accent-strong));
+}
+
 .app {
   height: 100%;
   display: grid;
@@ -790,6 +854,8 @@ a { color: var(--accent); }
   border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   cursor: default;
   user-select: none;
+  content-visibility: auto;
+  contain-intrinsic-size: var(--row);
 }
 .row:hover { background: var(--hover); }
 .row.selected { background: var(--selected); }
@@ -879,6 +945,8 @@ a { color: var(--accent); }
   user-select: none;
   display: flex;
   flex-direction: column;
+  content-visibility: auto;
+  contain-intrinsic-size: 164px;
 }
 .tile:hover { border-color: var(--border-strong); box-shadow: var(--shadow-soft); }
 .tile.selected { border-color: var(--accent); background: var(--selected); }

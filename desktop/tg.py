@@ -42,6 +42,7 @@ from telethon.tl.types import (
 
 from . import appconfig
 from . import filetypes
+from . import vaultstore
 from .catalog import Catalog, clean_folder_path, clean_name, default_folder
 
 log = logging.getLogger("tfe.tg")
@@ -49,6 +50,10 @@ log = logging.getLogger("tfe.tg")
 APP_VERSION = "1.0"
 MAX_UPLOAD = 2 * 1024 * 1024 * 1024
 PREMIUM_MAX_UPLOAD = 4 * 1024 * 1024 * 1024
+# Incremental syncs only read new messages; a full pass (which also notices
+# deleted items) runs this often so the index cannot drift forever.
+RECONCILE_DAYS = 7
+RECONCILE_SECONDS = RECONCILE_DAYS * 24 * 3600
 # Every channel the Explorer creates for storage carries this marker in its
 # description, so a fresh install can find the vaults again.
 VAULT_MARKER = "Telegram File Explorer vault"
@@ -1251,8 +1256,16 @@ class TelegramService:
         return found
 
     # ------------------------------------------------------------------- sync
-    async def sync(self, catalog: Catalog, bot_db: Path) -> bool:
-        """Index the active vault; False when another sync is already running."""
+    async def sync(
+        self, catalog: Catalog, bot_db: Path, full: bool = False
+    ) -> bool:
+        """Index the active vault; False when another sync is already running.
+
+        New messages are read from the stored message-id cursor. A complete
+        pass runs when the vault was never scanned, when the last complete
+        pass is older than ``RECONCILE_DAYS``, or when ``full`` is set; that
+        pass also hides items deleted from the channel.
+        """
         if self.sync_state.get("running"):
             return False
         self.sync_state = {
@@ -1261,6 +1274,8 @@ class TelegramService:
             "total": 0,
             "stored": 0,
             "imported": 0,
+            "hidden": 0,
+            "mode": "full",
             "error": None,
             "started": datetime.now().isoformat(timespec="seconds"),
             "finished": None,
@@ -1270,21 +1285,47 @@ class TelegramService:
             if self._vault is None:
                 await self._resolve_vault()
             chat_id = int(self._entity.id)
+            cursor = catalog.sync_cursor(chat_id)
+            last_id = int(cursor.get("last_message_id") or 0)
+            latest_full = self._cursor_age(cursor.get("last_full_at") or "")
+            complete = (
+                full
+                or last_id <= 0
+                or latest_full is None
+                or latest_full > RECONCILE_SECONDS
+            )
+            self.sync_state["mode"] = "full" if complete else "incremental"
             total = 0
-            try:
-                result = await client.get_messages(self._entity, limit=0)
-                total = int(getattr(result, "total", 0) or 0)
-            except Exception:
-                total = 0
+            if complete:
+                try:
+                    result = await client.get_messages(self._entity, limit=0)
+                    total = int(getattr(result, "total", 0) or 0)
+                except Exception:
+                    total = 0
             self.sync_state["total"] = total
             stored = 0
             scanned = 0
+            newest = last_id
+            seen: Optional[set] = set() if complete else None
             batch: List[Dict[str, Any]] = []
             async for message in client.iter_messages(
-                self._entity, limit=None, wait_time=0
+                self._entity,
+                limit=None,
+                wait_time=0,
+                min_id=0 if complete else last_id,
             ):
                 scanned += 1
+                message_id = int(message.id)
+                newest = max(newest, message_id)
+                if seen is not None:
+                    seen.add(message_id)
                 info = self.describe(message, chat_id)
+                if info is not None and vaultstore.is_snapshot_name(
+                    str(info.get("name") or "")
+                ):
+                    # The library backups this app posts into the channel are
+                    # not files; indexing them only adds rows to hide again.
+                    info = None
                 if info is not None:
                     batch.append(info)
                     stored += 1
@@ -1301,8 +1342,11 @@ class TelegramService:
                 catalog.upsert_many(batch)
             self.sync_state["scanned"] = scanned
             self.sync_state["stored"] = stored
-            if total == 0:
+            if complete and total == 0:
                 self.sync_state["total"] = scanned
+            if complete and seen is not None and not self.is_bot_vault():
+                self.sync_state["hidden"] = catalog.hide_missing(chat_id, seen)
+            catalog.set_sync_cursor(chat_id, newest, full=complete)
             if self.is_bot_vault():
                 self.sync_state["imported"] = catalog.import_from_bot(bot_db, chat_id)
         except Exception as exc:
@@ -1311,6 +1355,20 @@ class TelegramService:
             self.sync_state["running"] = False
             self.sync_state["finished"] = datetime.now().isoformat(timespec="seconds")
         return True
+
+    @staticmethod
+    def _cursor_age(stamp: str) -> Optional[float]:
+        """Seconds since the last complete pass; None when unknown."""
+        if not stamp:
+            return None
+        try:
+            then = datetime.fromisoformat(stamp)
+        except ValueError:
+            return None
+        if then.tzinfo is None:
+            then = then.astimezone()
+        return max(0.0, (datetime.now().astimezone() - then).total_seconds())
+
 
     def describe(self, message: Any, chat_id: int) -> Optional[Dict[str, Any]]:
         if message is None:

@@ -841,6 +841,86 @@ async def lock_now(request: Request):
     return {"locked": True}
 
 
+# ------------------------------------------------------------------- cache
+CACHE_DIRS = ("stream", "thumbpicks", "inspect", "external", "reupload", "merge", "uploads")
+REGENERATED_THUMB_DIRS = ("storyboards", "movies")
+
+
+def _sweep_cache_dir(root: Path, totals: Dict[str, int]) -> None:
+    if not root.is_dir():
+        return
+    dirs: List[Path] = []
+    for path in root.rglob("*"):
+        if path.is_dir():
+            dirs.append(path)
+            continue
+        try:
+            size = path.stat().st_size
+            path.unlink()
+        except OSError:
+            totals["skipped"] += 1
+            continue
+        totals["freed"] += size
+        totals["removed"] += 1
+    for path in sorted(dirs, key=lambda item: len(item.parts), reverse=True):
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+    try:
+        root.rmdir()
+    except OSError:
+        pass
+
+
+def _clear_cache_files() -> Dict[str, int]:
+    """Delete regenerable local data; picked covers and star art stay."""
+    totals = {"freed": 0, "removed": 0, "skipped": 0}
+    for name in CACHE_DIRS:
+        _sweep_cache_dir(appconfig.CACHE_DIR / name, totals)
+    for name in REGENERATED_THUMB_DIRS:
+        _sweep_cache_dir(appconfig.THUMB_DIR / name, totals)
+    for pattern in ("*.thumb", "*.tmp"):
+        for path in appconfig.THUMB_DIR.glob(pattern):
+            try:
+                size = path.stat().st_size
+                path.unlink()
+            except OSError:
+                totals["skipped"] += 1
+                continue
+            totals["freed"] += size
+            totals["removed"] += 1
+    return totals
+
+
+def _transfers_busy(state: Any) -> bool:
+    if state.service.sync_state.get("running"):
+        return True
+    for transfer in state.service.transfers.values():
+        if transfer.get("busy"):
+            return True
+        if str(transfer.get("state") or "") not in {"done", "cancelled", "error"}:
+            return True
+    return False
+
+
+@app.post("/api/cache/clear")
+async def clear_cache(request: Request):
+    state = _state(request)
+    if state.locked:
+        raise TGError("Unlock the app first.")
+    if _transfers_busy(state):
+        raise TGError("Wait for the current sync, upload or merge to finish.")
+    totals = await run_in_threadpool(_clear_cache_files)
+    log.info(
+        "Cleared local cache: %d file(s), %.1f MB (%d in use)",
+        totals["removed"],
+        totals["freed"] / 1e6,
+        totals["skipped"],
+    )
+    return totals
+
+
 @app.post("/api/pin/set")
 async def pin_set(body: PinBody, request: Request):
     state = _state(request)
@@ -948,17 +1028,31 @@ def _custom_thumb_ids() -> List[int]:
 
 
 def _folders_with_covers(state, chat_id) -> List[Dict[str, Any]]:
-    folders = state.catalog.folders(chat_id)
-    covers = state.catalog.folder_covers(chat_id, has_thumb_file=_thumb_cached)
-    for entry in folders:
-        entry["covers"] = [
+    # Covers are fetched separately for the folders the UI is showing, so the
+    # nav stays cheap even with a large library.
+    return state.catalog.folders(chat_id)
+
+
+@app.get("/api/folder-covers")
+async def folder_covers(request: Request, folder: List[str] = Query(default=[])):
+    state = _state(request)
+    wanted = [name for name in folder if name][:80]
+    covers = await run_in_threadpool(
+        state.catalog.folder_covers,
+        _chat_id(state),
+        paths=wanted,
+    )
+    payload = {
+        path: [
             {
                 "url": f"/api/thumb/{cover['id']}?v={cover['version']}",
                 "kind": cover["kind"],
             }
-            for cover in covers.get(entry["folder"].lower(), [])
+            for cover in entries
         ]
-    return folders
+        for path, entries in covers.items()
+    }
+    return JSONResponse({"covers": payload}, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/nav")
@@ -1478,7 +1572,7 @@ async def quit_app(request: Request):
 
 # ----------------------------------------------------------------------- sync
 @app.post("/api/sync")
-async def sync_now(request: Request):
+async def sync_now(request: Request, full: bool = False):
     state = _state(request)
     info = state.service.status()
     if info["sync"].get("running"):
@@ -1487,13 +1581,13 @@ async def sync_now(request: Request):
         raise TGError("Log in first.")
     if not info["vault"]:
         raise TGError("Choose your channel first.")
-    _spawn(state, _sync_and_snapshot(state))
+    _spawn(state, _sync_and_snapshot(state, full))
     await asyncio.sleep(0)
     return {"started": True, "sync": state.service.sync_state}
 
 
-async def _sync_and_snapshot(state) -> None:
-    if not await state.service.sync(state.catalog, state.bot_db):
+async def _sync_and_snapshot(state, full: bool = False) -> None:
+    if not await state.service.sync(state.catalog, state.bot_db, full=full):
         return
     info = state.service.status()
     if not (info["authorized"] and info.get("vault")):
@@ -1570,6 +1664,7 @@ async def items(
     direction: str = Query("desc", max_length=4),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    cursor: str = Query("", max_length=400),
 ):
     state = _state(request)
     for value in (after, before):
@@ -1599,6 +1694,7 @@ async def items(
         performer=star,
         collection=collection,
         watching=watching,
+        cursor=cursor,
     )
     vault = _vault(state.service.status())
     result["items"] = [public_item(item, vault) for item in result["items"]]

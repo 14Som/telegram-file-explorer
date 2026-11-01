@@ -282,6 +282,10 @@ const S = {
   items: [],
   total: 0,
   totalSize: 0,
+  nextCursor: "",
+  covers: {},
+  coversPending: new Set(),
+  coversSeq: 0,
   loading: false,
   itemsPending: false,
   loadSeq: 0,
@@ -471,6 +475,7 @@ function init() {
   setIcon($("syncBtn"), "refresh");
   setIcon($("moreBtn"), "more");
   setIcon($("lockBtn"), "lock");
+  setIcon($("cacheBtn"), "trash");
   setIcon($("quitBtn"), "power");
   setIcon($("vaultChipCaret"), "chevron");
   setIcon($("vaultRefreshBtn"), "refresh");
@@ -484,6 +489,7 @@ function init() {
   applyPreviewState();
   document.querySelector(".search-icon").innerHTML = svgRaw("search");
   $("sortDirBtn").innerHTML = svgRaw(S.dir === "asc" ? "sortAsc" : "sortDesc");
+  setupScrollbars();
   $("uploadsClose").innerHTML = svgRaw("close");
   $("viewerClose").innerHTML = svgRaw("close");
   $("viewerDownload").innerHTML = svgRaw("download");
@@ -642,6 +648,7 @@ function updateChrome() {
   lockBtn.title = st && st.locked ? "Locked" : "Lock the app";
   const isReady = ready() && !(st && st.locked);
   $("syncBtn").disabled = !isReady || (st && st.sync && st.sync.running);
+  $("cacheBtn").disabled = !isReady;
   $("uploadBtn").disabled = !isReady;
   $("uploadCaret").disabled = !isReady;
   $("uploadFilesOption").disabled = !isReady;
@@ -1555,6 +1562,31 @@ async function lockNow() {
   }
 }
 
+async function clearCache() {
+  const button = $("cacheBtn");
+  if (button.disabled) return;
+  button.disabled = true;
+  setIcon(button, "refresh");
+  button.classList.add("spinning");
+  try {
+    const result = await api("/api/cache/clear", { method: "POST" });
+    if (!result || !result.removed) {
+      toast("Nothing to clear — the cache is already empty.", "success");
+    } else {
+      toast(`Cleared ${fmtSize(result.freed)} of temporary files.`, "success");
+      if (result.skipped) {
+        toast(`${result.skipped} file(s) are in use and were left alone.`, "info");
+      }
+    }
+  } catch (error) {
+    toast(error.message || "Could not clear the cache.", "error");
+  } finally {
+    button.classList.remove("spinning");
+    setIcon(button, "trash");
+    button.disabled = false;
+  }
+}
+
 function pinInput(placeholder) {
   const input = inputEl({ type: "password", inputmode: "numeric", maxlength: "4", autocomplete: "new-password", placeholder: placeholder || "4 digits" });
   input.addEventListener("input", () => {
@@ -2335,6 +2367,9 @@ async function loadNav() {
   try {
     const data = await api("/api/nav");
     S.nav = data;
+    S.covers = {};
+    S.coversPending.clear();
+    S.coversSeq += 1;
     renderSidebar();
     renderKindOptions();
     if (!S.itemsPending) renderItems();
@@ -2633,6 +2668,7 @@ async function loadItems(options) {
     S.items = [];
     S.total = 0;
     S.totalSize = 0;
+    S.nextCursor = "";
   }
   setStatus(reset ? "Loading…" : "Loading more…");
   const params = new URLSearchParams();
@@ -2658,20 +2694,29 @@ async function loadItems(options) {
   params.set("sort", S.sort);
   params.set("direction", S.dir);
   params.set("limit", "200");
-  params.set("offset", String(reset ? 0 : S.items.length));
+  if (!reset && S.nextCursor) params.set("cursor", S.nextCursor);
+  else params.set("offset", String(reset ? 0 : S.items.length));
   try {
     const data = await api(`/api/items?${params.toString()}`);
     if (seq !== S.loadSeq) return;
     S.items = reset ? data.items : S.items.concat(data.items);
     S.total = data.total;
     S.totalSize = data.total_size;
+    S.nextCursor = data.next_cursor || "";
     S.loading = false;
     if (S.selectedId && !S.items.some((item) => item.id === S.selectedId)) {
       S.selectedId = null;
     }
     S.itemsPending = false;
-    renderItems();
-    updateStatusCounts();
+    if (reset) {
+      renderItems();
+    } else {
+      appendItemRows(data.items);
+      updateStatusCounts();
+      updateBreadcrumb();
+      renderSelection();
+      renderPreview();
+    }
     if (S.starId) renderStarBanner();
     setStatus(data.total ? `${plural(data.total, "item")} in this view` : "");
     if (S.items.length < data.total) setStatus(`${S.items.length} of ${data.total} items loaded`);
@@ -2831,11 +2876,23 @@ function renderItems() {
   }
   rows.append(rowFrag);
   tiles.append(tileFrag);
+  ensureFolderCovers(folders.map((entry) => entry.folder));
   updateStatusCounts();
   updateBreadcrumb();
   updateSortArrows();
   renderSelection();
   renderPreview();
+}
+function appendItemRows(items) {
+  if (!items || !items.length) return;
+  const rowFrag = document.createDocumentFragment();
+  const tileFrag = document.createDocumentFragment();
+  for (const item of items) {
+    rowFrag.append(buildRow(item));
+    tileFrag.append(buildTile(item));
+  }
+  $("rows").append(rowFrag);
+  $("tilesView").append(tileFrag);
 }
 function folderSelected(folder) {
   return Boolean(S.selectedFolderPath && S.selectedFolderPath.toLowerCase() === folder.folder.toLowerCase());
@@ -2874,25 +2931,55 @@ function buildCoverGrid(folder) {
 function folderIconBadge(folder) {
   return folder.icon ? h("span", { class: "cover-icon", text: folder.icon }) : null;
 }
-function buildFolderThumb(folder) {
-  const grid = buildCoverGrid(folder);
-  if (grid) return h("span", { class: "thumb folder-thumb covers" }, grid, folderIconBadge(folder));
-  const glyph = folder.icon
-    ? h("span", { class: "folder-glyph", text: folder.icon })
-    : h("span", { class: "folder-glyph", html: svgRaw("folder") });
-  return h("span", { class: "thumb folder-thumb" }, glyph);
+function folderCoverGrid(folder) {
+  return buildCoverGrid({ covers: S.covers[folder.folder.toLowerCase()] || [] });
 }
-function buildFolderTile(folder) {
-  const grid = buildCoverGrid(folder);
-  const media = grid
-    ? h("div", { class: "tile-media folder-tile-media covers" }, grid, folderIconBadge(folder))
-    : h("div", { class: "tile-media folder-tile-media" },
-        folder.icon
-          ? h("span", { class: "folder-glyph large", text: folder.icon })
-          : h("span", { class: "folder-glyph large", html: svgRaw("folder") })
-      );
+function folderGlyph(folder, large) {
+  if (folder.icon) return h("span", { class: "folder-glyph" + (large ? " large" : ""), text: folder.icon });
+  return h("span", { class: "folder-glyph" + (large ? " large" : ""), html: svgRaw("folder") });
+}
+function fillFolderThumb(host, folder) {
+  const grid = folderCoverGrid(folder);
+  host.classList.toggle("covers", Boolean(grid));
+  host.replaceChildren();
+  if (grid) {
+    host.append(grid);
+    const badge = folderIconBadge(folder);
+    if (badge) host.append(badge);
+    return;
+  }
+  host.append(folderGlyph(folder, false));
+}
+function fillFolderTile(media, folder) {
+  const grid = folderCoverGrid(folder);
+  media.classList.toggle("covers", Boolean(grid));
+  media.replaceChildren();
+  if (grid) {
+    media.append(grid);
+    const badge = folderIconBadge(folder);
+    if (badge) media.append(badge);
+  } else {
+    media.append(folderGlyph(folder, true));
+  }
   if (folder.n) media.append(h("span", { class: "tile-badge", text: plural(folder.n, "file") }));
   if (folder.note) media.append(h("span", { class: "tile-badge note", title: folder.note, html: svgRaw("note") }));
+}
+function buildFolderThumb(folder) {
+  const host = h("span", {
+    class: "thumb folder-thumb",
+    "data-cover-folder": folder.folder,
+    "data-cover-kind": "row"
+  });
+  fillFolderThumb(host, folder);
+  return host;
+}
+function buildFolderTile(folder) {
+  const media = h("div", {
+    class: "tile-media folder-tile-media",
+    "data-cover-folder": folder.folder,
+    "data-cover-kind": "tile"
+  });
+  fillFolderTile(media, folder);
   return h("div", { class: "tile folder-tile" + (folderSelected(folder) ? " selected" : ""), "data-folder": folder.folder, tabindex: "-1" },
     media,
     h("div", { class: "tile-body" },
@@ -2903,6 +2990,47 @@ function buildFolderTile(folder) {
       )
     )
   );
+}
+async function ensureFolderCovers(paths) {
+  const wanted = [];
+  for (const path of paths || []) {
+    if (!path) continue;
+    const key = path.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(S.covers, key)) continue;
+    if (S.coversPending.has(key)) continue;
+    S.coversPending.add(key);
+    wanted.push(path);
+  }
+  if (!wanted.length) return;
+  const seq = S.coversSeq;
+  const params = new URLSearchParams();
+  for (const path of wanted) params.append("folder", path);
+  try {
+    const data = await api(`/api/folder-covers?${params.toString()}`);
+    if (seq !== S.coversSeq) return;
+    const found = data.covers || {};
+    for (const path of wanted) {
+      const key = path.toLowerCase();
+      S.covers[key] = found[key] || [];
+      S.coversPending.delete(key);
+    }
+    patchFolderCovers(wanted);
+  } catch (_) {
+    for (const path of wanted) S.coversPending.delete(path.toLowerCase());
+  }
+}
+function patchFolderCovers(paths) {
+  const wanted = new Set(paths.map((path) => path.toLowerCase()));
+  if (S.selectedFolderPath && wanted.has(S.selectedFolderPath.toLowerCase())) renderPreview();
+  const folders = new Map((S.nav.folders || []).map((entry) => [entry.folder.toLowerCase(), entry]));
+  for (const host of document.querySelectorAll("[data-cover-folder]")) {
+    const key = host.dataset.coverFolder.toLowerCase();
+    if (!wanted.has(key)) continue;
+    const folder = folders.get(key);
+    if (!folder) continue;
+    if (host.dataset.coverKind === "tile") fillFolderTile(host, folder);
+    else fillFolderThumb(host, folder);
+  }
 }
 function buildThumb(item) {
   const thumb = h("span", { class: "thumb" });
@@ -3483,8 +3611,9 @@ function renderFolderPreview(folder) {
     tags.append(chip);
   }
   setPreviewNote(folder.note, true);
+  ensureFolderCovers([folder.folder]);
   const media = $("previewMedia");
-  const grid = buildCoverGrid(folder);
+  const grid = folderCoverGrid(folder);
   media.replaceChildren(
     grid
       ? h("div", { class: "folder-preview-covers" }, grid, folderIconBadge(folder))
@@ -6931,6 +7060,7 @@ async function syncTick() {
       if (S.syncFinalHandled !== key) {
         S.syncFinalHandled = key;
         if (sync.error) toast(sync.error, "error", 7000);
+        else if (sync.mode === "incremental" && !(sync.stored || 0)) toast("Up to date — no new messages.", "success", 4000);
         else toast(`Sync complete — ${plural(sync.stored || 0, "file")} indexed${sync.imported ? `, ${sync.imported} names adopted` : ""}.`, "success", 5000);
         await Promise.all([loadNav(), loadItems({ reset: true }), refreshStatusOnly()]);
         updateChrome();
@@ -6958,7 +7088,9 @@ function renderSyncState(sync) {
     bar.style.width = "";
   }
   $("syncLabel").textContent = sync.running
-    ? `Scanning ${sync.scanned || 0}${sync.total ? ` of ${sync.total}` : ""} · ${sync.stored || 0} stored`
+    ? (sync.mode === "incremental" && !sync.total
+      ? `Checking new messages · ${sync.stored || 0} stored`
+      : `Scanning ${sync.scanned || 0}${sync.total ? ` of ${sync.total}` : ""} · ${sync.stored || 0} stored`)
     : `Sync ${sync.error ? "failed" : "complete"}`;
   $("syncBtn").disabled = true;
   $("syncBtn").classList.add("spinning");
@@ -7218,6 +7350,7 @@ function bindEvents() {
   });
   $("botChip").addEventListener("click", toggleBot);
   $("lockBtn").addEventListener("click", lockNow);
+  $("cacheBtn").addEventListener("click", clearCache);
   $("lockVaultBtn").addEventListener("click", showLockVaults);
   $("lockVaultBack").addEventListener("click", backToPin);
   $("lockForgot").addEventListener("click", showRecovery);
@@ -7309,9 +7442,10 @@ function bindEvents() {
     if (!event.target.closest(".vault-wrap")) closeVaultMenu();
   });
   window.addEventListener("resize", hideContextMenu);
-  $("content").addEventListener("scroll", hideContextMenu);
-  $("content").addEventListener("scroll", () => {
-    const node = $("content");
+  const contentScroll = scrollTargets($("content"));
+  contentScroll.event.addEventListener("scroll", hideContextMenu);
+  contentScroll.event.addEventListener("scroll", () => {
+    const node = contentScroll.offset;
     if (S.loading || S.itemsPending || isStarCatalogue()) return;
     if (!S.total || S.items.length >= S.total) return;
     if (node.scrollTop + node.clientHeight >= node.scrollHeight - 420) loadMore();
@@ -7471,6 +7605,60 @@ function handleKeydown(event) {
     if (next < folders.length) selectFolderRow(folders[next].folder, { scroll: true });
     else selectItem(S.items[next - folders.length].id, { scroll: true });
   }
+}
+
+/* ---------------------------------------------------------- scrollbars */
+const SCROLLBAR_TARGETS = [
+  ".sidebar", "#content", ".preview-scroll", ".vault-list", ".upload-list",
+  ".modal-body", ".channel-list", ".lock-vault-list", ".login-card",
+  ".text-preview", ".viewer-stage pre", ".picker-tree", ".star-note",
+  ".star-pick-list", ".star-portrait-grid", ".movie-cast", ".movie-results",
+  ".check-list", ".batch-preview"
+].join(",");
+const scrollInstances = new Map();
+
+function enhanceScrollbars() {
+  const lib = window.OverlayScrollbarsGlobal;
+  if (!lib) return;
+  const nodes = Array.from(document.querySelectorAll(SCROLLBAR_TARGETS));
+  for (const node of nodes) {
+    if (scrollInstances.has(node) || !node.isConnected || !node.offsetParent) continue;
+    const instance = lib.OverlayScrollbars(node, {
+      scrollbars: { autoHide: "leave", autoHideDelay: 500, clickScroll: true }
+    });
+    if (instance) scrollInstances.set(node, instance);
+  }
+  for (const [node, instance] of scrollInstances) {
+    if (node.isConnected) continue;
+    instance.destroy();
+    scrollInstances.delete(node);
+  }
+}
+
+function setupScrollbars() {
+  const lib = window.OverlayScrollbarsGlobal;
+  if (!lib) return;
+  if (lib.ClickScrollPlugin) lib.OverlayScrollbars.plugin(lib.ClickScrollPlugin);
+  enhanceScrollbars();
+  let queued = false;
+  new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      enhanceScrollbars();
+    });
+  }).observe(document.body, { childList: true, subtree: true });
+}
+
+function scrollTargets(node) {
+  const instance = scrollInstances.get(node);
+  if (!instance) return { event: node, offset: node };
+  const elements = instance.elements();
+  return {
+    event: elements.scrollEventElement || node,
+    offset: elements.scrollOffsetElement || node
+  };
 }
 
 /* ----------------------------------------------------------------- start */

@@ -1,11 +1,16 @@
 """Keeps the Explorer's library data inside the vault channel.
 
-The index (folders, names, tags, notes, favorites), the thumbnails and the
-settings are packed into a ``tfe-data-*.zip`` document and posted into the
-vault channel — on every app close and after every completed sync, keeping
-the ten most recent copies. On launch the newest archive is downloaded and
-restored whenever it is newer than the local data, so the whole library
+The index (folders, names, tags, notes, favorites), the settings and the
+user-picked artwork are packed into a ``tfe-data-*.zip`` document and posted
+into the vault channel — on every app close and after every completed sync,
+keeping the ten most recent copies. On launch the newest archive is downloaded
+and restored whenever it is newer than the local data, so the whole library
 comes back even if the PC's data folder (or the EXE) is gone.
+
+Generated imagery is not uploaded: auto thumbnails, IMDb posters and video
+storyboards rebuild themselves from Telegram or the network, and bundling
+them made snapshots grow with the whole library. Only hand-picked covers and
+star portraits travel, because those cannot be regenerated.
 
 The MTProto session file is deliberately never uploaded: it is a login
 credential and can be recreated in seconds with the QR sign-in.
@@ -84,6 +89,10 @@ def _snapshot_name(name: str) -> Optional[datetime]:
         return None
 
 
+def is_snapshot_name(name: str) -> bool:
+    return _snapshot_name(name) is not None
+
+
 async def find_latest(service: Any) -> Optional[Tuple[datetime, Any]]:
     client = service._require_ready()
     if service._entity is None:
@@ -124,6 +133,24 @@ def _safe_members(archive: zipfile.ZipFile) -> list:
     return members
 
 
+def _snapshot_thumbs() -> list:
+    """Artwork worth travelling: picked covers and star portraits only."""
+    keep = []
+    root = appconfig.THUMB_DIR
+    if not root.is_dir():
+        return keep
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        parts = rel.parts
+        if len(parts) == 1 and rel.name.endswith(".custom.jpg"):
+            keep.append(path)
+        elif len(parts) == 2 and parts[0] == "stars":
+            keep.append(path)
+    return keep
+
+
 async def save(service: Any) -> Dict[str, Any]:
     client = service._require_ready()
     entity = service._entity
@@ -142,13 +169,12 @@ async def save(service: Any) -> Dict[str, Any]:
             archive.write(db_snap, "library.db")
             if appconfig.SETTINGS_PATH.exists():
                 archive.write(appconfig.SETTINGS_PATH, "settings.json")
-            for thumb in sorted(appconfig.THUMB_DIR.rglob("*")):
-                if thumb.is_file():
-                    archive.write(
-                        thumb,
-                        f"thumbs/{thumb.relative_to(appconfig.THUMB_DIR).as_posix()}",
-                    )
-                    thumbs += 1
+            for thumb in _snapshot_thumbs():
+                archive.write(
+                    thumb,
+                    f"thumbs/{thumb.relative_to(appconfig.THUMB_DIR).as_posix()}",
+                )
+                thumbs += 1
             archive.writestr(
                 "manifest.json",
                 json.dumps(
@@ -156,6 +182,7 @@ async def save(service: Any) -> Dict[str, Any]:
                         "app": "telegram-file-explorer",
                         "saved": when.isoformat(timespec="seconds"),
                         "thumbs": thumbs,
+                        "thumb_policy": "covers+stars",
                     },
                     indent=2,
                 ),
