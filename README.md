@@ -12,9 +12,12 @@ Two parts, and either one is optional:
 
 ## Quick start (Windows)
 
-1. Run `TelegramFileExplorerSetup.exe` — it installs the app (and the bot) for your
-   user, no admin rights needed. Already have `TelegramFileExplorer.exe`? Run that
-   instead; it works on its own.
+1. Download `TelegramFileExplorerSetup.exe` from
+   [Releases](https://github.com/14Som/telegram-file-explorer/releases/latest) — it
+   installs the app (and the bot) for your user, no admin rights needed. The build is
+   unsigned, so SmartScreen shows an unknown-publisher warning: *More info → Run
+   anyway*. Already have `TelegramFileExplorer.exe`? Run that instead; it works on
+   its own.
 2. Double-click **Telegram File Explorer** and sign in with the **QR code**: Telegram
    on your phone → Settings → Devices → *Link Desktop Device*. The *Phone code* tab
    works too.
