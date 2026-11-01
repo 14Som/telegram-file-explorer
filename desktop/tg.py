@@ -1687,6 +1687,24 @@ class TelegramService:
             raise TGError(friendly_error(exc))
         self._message_cache.pop(int(message_id), None)
 
+    async def copy_messages(self, message_ids: List[int]) -> List[Dict[str, Any]]:
+        client = self._require_ready()
+        if self._vault is None:
+            await self._resolve_vault()
+        chat_id = int(self._entity.id)
+        try:
+            forwarded = await client.forward_messages(
+                self._entity, [int(value) for value in message_ids], from_peer=self._entity
+            )
+        except Exception as exc:
+            raise TGError(friendly_error(exc))
+        copied: List[Dict[str, Any]] = []
+        for message in forwarded or []:
+            info = self.describe(message, chat_id)
+            if info is not None:
+                copied.append(info)
+        return copied
+
     # ----------------------------------------------------------------- upload
     def new_transfer(self, name: str, size: int, client: str = "") -> str:
         transfer_id = f"t{int(time.time() * 1000)}-{len(self.transfers)}"

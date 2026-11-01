@@ -256,6 +256,7 @@ function loadFilterState() {
   }
 }
 const SAVED_PREFS = loadPrefs();
+const CLIPBOARD = { ids: [], vault: "" };
 
 const S = {
   status: null,
@@ -3326,6 +3327,27 @@ function goForward() {
   S.histIndex += 1;
   applyHistory();
 }
+function handleHistoryMouseButton(event) {
+  if (event.button !== 3 && event.button !== 4) return;
+  event.preventDefault();
+  if (event.type !== "mousedown") return;
+  if (!$("lockOverlay").hidden || !$("loginOverlay").hidden) return;
+  if (event.button === 4) {
+    goForward();
+    return;
+  }
+  if (document.fullscreenElement) { document.exitFullscreen(); return; }
+  if (!$("modalRoot").hidden) { closeModal(); return; }
+  if (!$("viewerOverlay").hidden) {
+    if (VIEWER.gallery && VIEWER.gallery.fulled) { VIEWER.gallery.exit(); return; }
+    closeViewer();
+    return;
+  }
+  if (!$("contextMenu").hidden) { hideContextMenu(); return; }
+  if (S.vaultMenuOpen) { closeVaultMenu(); return; }
+  if (!$("uploadMenu").hidden) { $("uploadMenu").hidden = true; return; }
+  goBack();
+}
 function applyHistory() {
   const snap = S.history[S.histIndex];
   if (!snap) return;
@@ -4962,6 +4984,34 @@ async function bulkCopyLinks() {
     toast(`Copied ${plural(lines.length, "link")} to the clipboard.`, "success");
   } catch (error) { toast(error.message, "error"); }
 }
+function clipboardIds() {
+  if (S.selection.size) return Array.from(S.selection);
+  const item = selectedItem();
+  return item ? [item.id] : [];
+}
+function copySelectionToClipboard() {
+  if (isStarCatalogue()) return;
+  const ids = clipboardIds();
+  if (!ids.length) {
+    toast(selectedFolder() ? "Open the folder to copy its files." : "Select a file first.", "error");
+    return;
+  }
+  CLIPBOARD.ids = ids;
+  toast(`Copied ${plural(ids.length, "file")}. Open another folder and press Ctrl+V.`, "success", 4000);
+}
+async function pasteClipboard() {
+  if (isStarCatalogue()) return;
+  if (!CLIPBOARD.ids.length) {
+    toast("Nothing to paste. Copy files with Ctrl+C first.", "error");
+    return;
+  }
+  const folder = S.folder || "";
+  try {
+    const data = await api("/api/batch/copy", { method: "POST", body: { item_ids: CLIPBOARD.ids, folder } });
+    toast(`Copied ${plural(data.copied, "file")} to ${folder || "All files"}.`, "success");
+    await Promise.all([loadNav(), loadItems({ reset: true })]);
+  } catch (error) { toast(error.message, "error"); }
+}
 function folderTreePicker(current) {
   const folders = S.nav.folders || [];
   const byPath = new Map(folders.map((entry) => [entry.folder.toLowerCase(), entry]));
@@ -5983,9 +6033,17 @@ const SHORTCUTS = [
   ["Delete", "Delete file or empty folder"],
   ["Enter / Space", "Open file or folder"],
   ["↑ / ↓", "Move selection"],
+  ["Home / End", "First / last item"],
+  ["Page Up / Page Down", "Move one screen"],
+  ["Backspace / Alt ↑", "Up one folder"],
+  ["Ctrl C / Ctrl V", "Copy / paste file"],
+  ["Ctrl B", "Show / hide details"],
   ["Ctrl F", "Search"],
   ["Ctrl A", "Select all files in this view"],
   ["Alt ← / →", "Back / forward"],
+  ["Mouse Back / Forward", "Back / forward"],
+  ["↑ / ↓ in player", "Volume up / down"],
+  ["Shift ← / → in player", "Seek 30 seconds"],
   ["?", "Show this list"],
   ["Esc", "Close dialog or player"]
 ];
@@ -7119,6 +7177,9 @@ function bindEvents() {
   $("backBtn").addEventListener("click", goBack);
   $("forwardBtn").addEventListener("click", goForward);
   $("upBtn").addEventListener("click", goUp);
+  for (const type of ["mousedown", "mouseup", "auxclick"]) {
+    window.addEventListener(type, handleHistoryMouseButton, true);
+  }
   $("previewToggle").addEventListener("click", togglePreview);
   $("searchInput").addEventListener("input", debounce(() => {
     S.q = $("searchInput").value.trim();
@@ -7511,8 +7572,13 @@ function handleViewerKey(event) {
     event.preventDefault();
     if (player.paused()) { const playing = player.play(); if (playing && playing.catch) playing.catch(() => {}); }
     else player.pause();
-  } else if (event.key === "ArrowRight") seekBy(5);
-  else if (event.key === "ArrowLeft") seekBy(-5);
+  } else if (event.key === "ArrowRight") seekBy(event.shiftKey ? 30 : 5);
+  else if (event.key === "ArrowLeft") seekBy(event.shiftKey ? -30 : -5);
+  else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+    event.preventDefault();
+    const delta = event.key === "ArrowUp" ? 0.1 : -0.1;
+    player.volume(Math.max(0, Math.min(1, Number(player.volume() || 0) + delta)));
+  }
   else if (key === "l") seekBy(10);
   else if (key === "j") seekBy(-10);
   else if (key === "m") { event.preventDefault(); player.muted(!player.muted()); }
@@ -7521,6 +7587,51 @@ function handleViewerKey(event) {
     if (player.isFullscreen()) player.exitFullscreen();
     else player.requestFullscreen();
   }
+}
+function entryNodes() {
+  const selector = S.view === "details"
+    ? "#rows .row[data-folder], #rows .row[data-id]"
+    : "#tilesView .tile[data-folder], #tilesView .tile[data-id]";
+  return Array.from(document.querySelectorAll(selector));
+}
+function pageSelectionStep() {
+  const nodes = entryNodes();
+  if (!nodes.length) return 0;
+  const scroller = scrollTargets($("content")).offset;
+  const box = scroller.getBoundingClientRect();
+  const tops = new Map();
+  for (const node of nodes) {
+    const rect = node.getBoundingClientRect();
+    if (rect.bottom <= box.top || rect.top >= box.bottom) continue;
+    const key = Math.round(rect.top);
+    tops.set(key, (tops.get(key) || 0) + 1);
+  }
+  const ordered = Array.from(tops.keys()).sort((a, b) => a - b);
+  const perRow = Math.max(1, ...tops.values());
+  const rowHeight = ordered.length > 1 ? ordered[1] - ordered[0] : nodes[0].getBoundingClientRect().height;
+  const rows = Math.max(1, Math.floor(box.height / (rowHeight || 120)));
+  return perRow * rows;
+}
+function selectEntryAt(index) {
+  const folders = visibleSubfolders();
+  const total = folders.length + S.items.length;
+  if (!total) return false;
+  index = Math.max(0, Math.min(total - 1, index));
+  if (index < folders.length) selectFolderRow(folders[index].folder, { scroll: true });
+  else selectItem(S.items[index - folders.length].id, { scroll: true });
+  return true;
+}
+function moveSelectionBy(delta) {
+  const folders = visibleSubfolders();
+  const total = folders.length + S.items.length;
+  if (!total) return false;
+  const item = selectedItem();
+  const folder = selectedFolder();
+  let index = -1;
+  if (folder) index = folders.findIndex((entry) => entry.folder === folder.folder);
+  else if (item) index = folders.length + S.items.findIndex((entry) => entry.id === item.id);
+  if (index < 0) return selectEntryAt(delta > 0 ? 0 : total - 1);
+  return selectEntryAt(index + delta);
 }
 function handleKeydown(event) {
   if (event.key === "Escape") {
@@ -7576,6 +7687,21 @@ function handleKeydown(event) {
     renderSelection();
     return;
   }
+  if (event.ctrlKey && event.key.toLowerCase() === "c") {
+    event.preventDefault();
+    copySelectionToClipboard();
+    return;
+  }
+  if (event.ctrlKey && event.key.toLowerCase() === "v") {
+    event.preventDefault();
+    pasteClipboard();
+    return;
+  }
+  if (event.ctrlKey && event.key.toLowerCase() === "b") {
+    event.preventDefault();
+    togglePreview();
+    return;
+  }
   const item = selectedItem();
   const folder = selectedFolder();
   if (event.key === "F2") {
@@ -7591,6 +7717,11 @@ function handleKeydown(event) {
     if (item) { event.preventDefault(); openViewerFor(item); return; }
     if (folder) { event.preventDefault(); openFolder(folder.folder); return; }
   }
+  if (event.key === "Backspace" || (event.altKey && event.key === "ArrowUp")) {
+    event.preventDefault();
+    goUp();
+    return;
+  }
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     const folders = visibleSubfolders();
     const total = folders.length + S.items.length;
@@ -7604,6 +7735,20 @@ function handleKeydown(event) {
     next = Math.max(0, Math.min(total - 1, next));
     if (next < folders.length) selectFolderRow(folders[next].folder, { scroll: true });
     else selectItem(S.items[next - folders.length].id, { scroll: true });
+    return;
+  }
+  if (event.key === "Home" || event.key === "End") {
+    const total = visibleSubfolders().length + S.items.length;
+    if (!total) return;
+    event.preventDefault();
+    selectEntryAt(event.key === "Home" ? 0 : total - 1);
+    return;
+  }
+  if (event.key === "PageDown" || event.key === "PageUp") {
+    const step = pageSelectionStep();
+    if (!step) return;
+    event.preventDefault();
+    moveSelectionBy(event.key === "PageDown" ? step : -step);
   }
 }
 

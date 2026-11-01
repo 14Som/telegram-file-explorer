@@ -213,6 +213,10 @@ class BatchMoveBody(BatchIdsBody):
     folder: str
 
 
+class BatchCopyBody(BatchIdsBody):
+    folder: str = ""
+
+
 class BatchRenameBody(BatchIdsBody):
     template: str = "{name}"
     preview: bool = False
@@ -2814,6 +2818,27 @@ async def batch_move(body: BatchMoveBody, request: Request):
         return count
 
     return {"moved": await run_in_threadpool(apply), "folder": folder}
+
+
+@app.post("/api/batch/copy")
+async def batch_copy(body: BatchCopyBody, request: Request):
+    state = _state(request)
+    folder = clean_folder_path(body.folder, "")
+    items = await _batch_items(state, body.item_ids)
+    if len(items) > 40:
+        raise TGError("Copy up to 40 files at a time.")
+    copied = await state.service.copy_messages([item["message_id"] for item in items])
+
+    def apply() -> List[int]:
+        created: List[int] = []
+        for info in copied:
+            info["folder"] = folder
+            info["folder_source"] = "user"
+            created.append(state.catalog.upsert(info))
+        return created
+
+    created = await run_in_threadpool(apply)
+    return {"copied": len(created), "folder": folder, "item_ids": created}
 
 
 @app.get("/api/batch/info")
