@@ -87,7 +87,7 @@ LOCK_OPEN_PATHS = {
 SPLIT_HARD_CAP = 64 * 1024 ** 3
 # Uploads are RTT-bound (Telegram takes 512 KiB parts), so a few files or
 # volumes can be in flight at once. Stay modest to avoid FloodWait.
-UPLOAD_CONCURRENCY = 3
+UPLOAD_CONCURRENCY = 4
 _upload_gate: Optional[asyncio.Semaphore] = None
 
 

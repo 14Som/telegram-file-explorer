@@ -77,6 +77,10 @@ PART_SIZE = 2000 * 1024 * 1024
 # of 4 x 1 MiB is enough to hide RTT to a distant DC without flooding.
 DOWNLOAD_STREAMS = 4
 DOWNLOAD_SEGMENT = 1024 * 1024
+# Uploads use one connection too; Telegram caps a file part at 512 KiB, and
+# larger parts mean fewer round trips than Telethon's size-based defaults.
+UPLOAD_PART_KB = 512
+UPLOAD_PART_MIN_BYTES = 10 * 1024 * 1024
 # Telegram caps one GetFile request at 512 KiB. Asking for more makes Telethon
 # switch to its generic iterator (extra alignment requests), so stay at the cap
 # and let each segment be a couple of back-to-back chunks instead.
@@ -1813,9 +1817,19 @@ class TelegramService:
                 self._progress(transfer_id, sent_base + sent, total)
 
         try:
+            # Telethon picks 128-256 KiB parts below 750 MiB, which leaves the
+            # upload round-trip bound. 512 KiB is Telegram's maximum part size,
+            # so pre-upload large files ourselves and hand the InputFile over.
+            uploaded = None
+            if path.stat().st_size > UPLOAD_PART_MIN_BYTES:
+                uploaded = await client.upload_file(
+                    str(path),
+                    part_size_kb=UPLOAD_PART_KB,
+                    progress_callback=report,
+                )
             message = await client.send_file(
                 target,
-                str(path),
+                uploaded if uploaded is not None else str(path),
                 caption=name,
                 force_document=keep_original,
                 mime_type=mime,
@@ -1823,7 +1837,7 @@ class TelegramService:
                 supports_streaming=kind == "video",
                 # Without this Telegram turns silent videos into animations.
                 nosound_video=True if kind == "video" else None,
-                progress_callback=report,
+                progress_callback=None if uploaded is not None else report,
             )
             if transfer.get("cancel"):
                 # The upload finished before the cancel landed; remove the
