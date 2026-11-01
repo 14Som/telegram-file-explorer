@@ -555,23 +555,31 @@ a { color: var(--accent); }
 .conn-dot.warn { background: #e8a300; }
 .conn-dot.bad { background: var(--danger); }
 .conn-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bot-chip {
-  display: flex;
+.server-chip {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex: none;
-  padding: 3px 10px;
+  margin-left: 6px;
+  height: 22px;
+  padding: 0 9px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--panel);
   color: var(--muted);
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   cursor: pointer;
+  white-space: nowrap;
+  flex: none;
 }
-.bot-chip:hover { border-color: var(--border-strong); color: var(--text); }
-.bot-chip:disabled { opacity: .6; cursor: default; }
-.bot-chip .bot-text { white-space: nowrap; }
+.server-chip:hover { background: var(--hover); color: var(--text); }
+.server-chip[hidden] { display: none; }
+.server-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; }
+.server-chip.online .server-dot { background: #2f9e44; box-shadow: 0 0 0 3px color-mix(in srgb, #2f9e44 16%, transparent); }
+.server-chip.stale .server-dot { background: #e8a300; }
+.server-chip.offline .server-dot { background: var(--danger); }
+.server-chip.unknown .server-dot { background: var(--faint); }
+.server-chip.online .server-text { color: var(--text); }
 .titlebar-actions { display: flex; align-items: center; gap: 6px; }
 
 .btn {

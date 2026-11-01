@@ -260,6 +260,7 @@ const CLIPBOARD = { ids: [], vault: "" };
 
 const S = {
   status: null,
+  server: null,
   authStage: "",
   authBusy: false,
   loginForced: false,
@@ -525,6 +526,8 @@ async function boot() {
     if (ready()) maybePromptPinSetup();
   }
   setInterval(periodicStatus, 20000);
+  refreshServer();
+  setInterval(refreshServer, 30000);
   window.addEventListener("online", () => { updateChrome(); if (ready() && !S.status.locked) refreshLibrary(false); });
   window.addEventListener("offline", updateChrome);
 }
@@ -560,6 +563,7 @@ async function applyPendingVault() {
 async function enterUnlocked() {
   if (ready()) {
     hideLogin();
+    refreshServer();
     await applyPendingVault();
     await refreshLibrary(true);
     resetHistory();
@@ -596,6 +600,7 @@ async function periodicStatus() {
       hideLogin();
     }
     if (S.status.sync && S.status.sync.running && !S.syncTimer) pollSync();
+    if (!S.server && ready() && !S.status.locked) refreshServer();
   } catch (_) {
     /* transient; next tick retries */
   }
@@ -643,7 +648,6 @@ function updateChrome() {
     if (S.vaultMenuOpen) closeVaultMenu();
   }
   if (S.vaultMenuOpen && (!st || st.locked || !st.authorized)) closeVaultMenu();
-  updateBotChip(st);
   const lockBtn = $("lockBtn");
   lockBtn.hidden = !(st && st.pin_set);
   lockBtn.title = st && st.locked ? "Locked" : "Lock the app";
@@ -661,63 +665,113 @@ function updateChrome() {
   document.title = st && st.vault && st.vault.title
     ? `${st.vault.title} — Telegram File Explorer`
     : "Telegram File Explorer";
+  updateServerChip();
 }
 
-function updateBotChip(st) {
-  const bot = st && st.bot;
-  const chipEl = $("botChip");
-  if (!bot || !bot.available) {
-    chipEl.hidden = true;
+/* ---------------------------------------------------------- server status */
+const SERVER_LABELS = {
+  online: "Server online",
+  stale: "Server delayed",
+  offline: "Server offline",
+  none: "Server silent",
+  unknown: "Server unknown"
+};
+
+function formatAge(seconds) {
+  const value = Math.max(0, Math.round(Number(seconds) || 0));
+  if (value < 60) return `${value}s ago`;
+  if (value < 3600) return `${Math.round(value / 60)}m ago`;
+  if (value < 86400) return `${Math.round(value / 3600)}h ago`;
+  return `${Math.round(value / 86400)}d ago`;
+}
+
+function formatUptime(seconds) {
+  const value = Math.max(0, Math.round(Number(seconds) || 0));
+  if (value < 3600) return plural(Math.max(1, Math.round(value / 60)), "minute");
+  if (value < 86400) return plural(Math.round(value / 3600), "hour");
+  return plural(Math.round(value / 86400), "day");
+}
+
+async function refreshServer() {
+  if (!ready() || (S.status && S.status.locked)) {
+    S.server = null;
+    updateServerChip();
     return;
   }
-  chipEl.hidden = false;
-  const dot = $("botDot");
-  const text = $("botText");
-  dot.className = "conn-dot";
-  if (bot.running) {
-    dot.classList.add("ok");
-    text.textContent = "Bot";
-    chipEl.title = "Storage bot running"
-      + (bot.pid ? ` (process ${bot.pid})` : "")
-      + ". It answers your commands in Telegram. Click to stop it.";
-  } else if (bot.configured === false) {
-    text.textContent = "Bot off";
-    chipEl.title = "The bot is not set up on this PC. Run the installer with the bot option to enable it.";
-  } else if (bot.enabled) {
-    dot.classList.add("warn");
-    text.textContent = "Bot starting…";
-    chipEl.title = "The storage bot is starting. Click to stop it.";
+  try {
+    S.server = await api("/api/server");
+  } catch (_) {
+    /* transient; the next tick retries */
+  }
+  updateServerChip();
+}
+
+function updateServerChip() {
+  const chip = $("serverChip");
+  if (!chip) return;
+  const visible = Boolean(ready() && S.status && !S.status.locked);
+  chip.hidden = !visible;
+  if (!visible) return;
+  if (!S.server) {
+    chip.className = "server-chip unknown";
+    $("serverText").textContent = "Checking server…";
+    chip.title = "Checking the storage bot on your server";
+    return;
+  }
+  const server = S.server;
+  const state = server.state || "unknown";
+  chip.className = `server-chip ${state}`;
+  const label = SERVER_LABELS[state] || SERVER_LABELS.unknown;
+  $("serverText").textContent = label;
+  if (typeof server.age === "number") {
+    chip.title = `${label} — last heartbeat ${formatAge(server.age)}`;
   } else {
-    text.textContent = "Bot off";
-    chipEl.title = "The storage bot is stopped, so Telegram commands are paused. Click to start it.";
+    chip.title = server.reason ? `${label} — ${server.reason}` : label;
   }
 }
 
-async function toggleBot() {
-  const bot = S.status && S.status.bot;
-  if (!bot || !bot.available || $("botChip").disabled) return;
-  $("botChip").disabled = true;
-  const stopping = bot.running;
-  if (!stopping) {
-    S.status = { ...S.status, bot: { ...bot, running: false, enabled: true } };
-    updateChrome();
+function showServerDetails() {
+  const server = S.server || {};
+  const state = server.state || "unknown";
+  const content = h("div", { class: "settings-section" },
+    h("h3", { text: "Always-on server" }),
+    h("div", { class: "settings-row" }, h("span", { text: "Status" }), h("span", { class: "value", text: SERVER_LABELS[state] || SERVER_LABELS.unknown }))
+  );
+  if (typeof server.age === "number") {
+    content.append(
+      h("div", { class: "settings-row" },
+        h("span", { text: "Last heartbeat" }),
+        h("span", { class: "value", text: `${formatAge(server.age)} · ${fmtDate(new Date(server.ts * 1000).toISOString())}` })
+      )
+    );
+  } else if (server.reason) {
+    content.append(
+      h("div", { class: "settings-row" }, h("span", { text: "Detail" }), h("span", { class: "value", text: server.reason }))
+    );
   }
-  try {
-    const result = await api(stopping ? "/api/bot/stop" : "/api/bot/start", { method: "POST" });
-    S.status = { ...S.status, bot: result.bot };
-    updateChrome();
-    if (result.bot && result.bot.error) {
-      toast(result.bot.error, "error", 8000);
-    } else {
-      toast(stopping ? "Storage bot stopped. Telegram commands are paused."
-        : "Storage bot is running. Telegram commands are live.", "success");
-    }
-  } catch (error) {
-    toast(error.message, "error");
-    updateChrome();
-  } finally {
-    $("botChip").disabled = false;
+  if (server.version) {
+    content.append(h("div", { class: "settings-row" }, h("span", { text: "Bot version" }), h("span", { class: "value", text: server.version })));
   }
+  if (server.files) {
+    content.append(h("div", { class: "settings-row" }, h("span", { text: "Files indexed on the server" }), h("span", { class: "value", text: String(server.files) })));
+  }
+  if (server.uptime) {
+    content.append(h("div", { class: "settings-row" }, h("span", { text: "Server bot uptime" }), h("span", { class: "value", text: formatUptime(server.uptime) })));
+  }
+  content.append(
+    h("p", { class: "modal-note", text: state === "online"
+      ? "The bot answered within the last few minutes, so /commands and file links work from any device."
+      : "The Explorer keeps working — files and vaults live in Telegram. If this stays red, the server bot is down or restarting." })
+  );
+  openModal({
+    title: "Server bot",
+    subtitle: "The storage bot runs on your always-on server. Explorer never starts or stops it.",
+    content,
+    actions: [
+      { label: "Refresh", onClick: async () => { S.server = null; await refreshServer(); showServerDetails(); } },
+      { label: "Close", onClick: closeModal }
+    ]
+  });
 }
 
 /* ---------------------------------------------------------------- vaults */
@@ -6578,6 +6632,11 @@ function promptSettings() {
   const sectionConnection = h("div", { class: "settings-section" },
     h("h3", { text: "Connection" }),
     h("div", { class: "settings-row" }, h("span", { text: "Telegram" }), h("span", { class: "value", text: st.authorized ? "Signed in" : "Not signed in" })),
+    h("div", { class: "settings-row" }, h("span", { text: "Explorer version" }), h("span", { class: "value", text: "2.0" })),
+    h("div", { class: "settings-row" },
+      h("span", { text: "Server bot" }),
+      h("span", { class: "value", text: S.server ? (SERVER_LABELS[S.server.state] || "Unknown") : "Checking…" })
+    ),
     st.state === "error" && st.error ? h("p", { class: "modal-note", text: st.error }) : null,
     h("div", { class: "settings-actions" },
       btn("Reconnect", "btn", async () => {
@@ -6591,6 +6650,7 @@ function promptSettings() {
         } catch (error) { toast(error.message, "error"); }
       }),
       st.authorized ? btn("Log out…", "btn danger", () => promptLogout()) : null,
+      btn("Server details…", "btn", () => { closeModal(); showServerDetails(); }),
       btn("Quit app", "btn", quitApp)
     )
   );
@@ -6609,7 +6669,7 @@ function promptSettings() {
   const notes = h("div", { class: "settings-section" },
     h("h3", { text: "Good to know" }),
     h("p", { class: "modal-note", text: "Files live in your private Telegram channel. Folders, tags, favorites, collections and names are the local index; renaming also updates the Telegram caption." }),
-    h("p", { class: "modal-note", text: "The Telegram session and library database are stored in your Windows profile (%APPDATA%\\TelegramFileExplorer). The bot token is never used here." }),
+    h("p", { class: "modal-note", text: "The Telegram session and library database are stored in your Windows profile (%APPDATA%\\TelegramFileExplorer). The bot runs on your always-on server, so this app never starts or stops it, and the bot token is never used here." }),
     h("p", { class: "modal-note", text: `Files above your Telegram account limit (${uploadLimitLabel()} per file) are split into archive parts automatically. Picking "Download complete file" on any part fetches all parts and joins them back into the original file. Deleting from Telegram removes the message from the channel.` })
   );
   const content = h("div", {}, account, sectionAppearance, sectionSecurity, sectionChannel, sectionLibrary, sectionTools, sectionConnection, shortcuts, notes);
@@ -6622,16 +6682,11 @@ function promptSettings() {
   });
 }
 function confirmQuit() {
-  const bot = S.status && S.status.bot;
-  const botLine = bot && bot.running
-    ? "The storage bot is running; it is stopped before the app closes."
-    : "The storage bot is not running.";
   openModal({
     title: "Quit Telegram File Explorer?",
-    subtitle: "The app exits and the storage bot stops.",
+    subtitle: "The window closes; the Telegram bot keeps running on your server.",
     content: h("div", {},
-      h("p", { text: botLine }),
-      h("p", { class: "modal-note", text: "The library snapshot is saved to your Telegram vault first, then the window closes. Files stay in Telegram, and the bot starts again next time you open the app." })
+      h("p", { class: "modal-note", text: "The library snapshot is saved to your Telegram vault first, then the window closes. Files stay in Telegram and the bot stays online, so nothing needs starting next time." })
     ),
     actions: [
       { label: "Cancel", onClick: closeModal },
@@ -6648,7 +6703,7 @@ async function quitApp() {
       h("div", { class: "quit-card" },
         h("span", { class: "spinner" }),
         h("strong", { text: "Shutting down…" }),
-        h("p", { text: "Stopping the storage bot and saving the library snapshot to your vault. The window closes by itself." })
+        h("p", { text: "Saving the library snapshot to your vault. The window closes by itself; the bot stays online." })
       )
     )
   );
@@ -7396,6 +7451,7 @@ function bindEvents() {
   $("uploadsClose").addEventListener("click", () => { $("uploadPanel").hidden = true; });
   $("moreBtn").addEventListener("click", promptSettings);
   $("quitBtn").addEventListener("click", confirmQuit);
+  $("serverChip").addEventListener("click", showServerDetails);
   $("vaultChip").addEventListener("click", toggleVaultMenu);
   $("vaultRefreshBtn").addEventListener("click", (event) => {
     event.stopPropagation();
@@ -7409,7 +7465,6 @@ function bindEvents() {
     event.stopPropagation();
     addStorageBot();
   });
-  $("botChip").addEventListener("click", toggleBot);
   $("lockBtn").addEventListener("click", lockNow);
   $("cacheBtn").addEventListener("click", clearCache);
   $("lockVaultBtn").addEventListener("click", showLockVaults);

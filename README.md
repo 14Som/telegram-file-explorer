@@ -8,13 +8,19 @@ download everything without a browser and without Bot API size limits.
 Two parts, and either one is optional:
 
 - **Telegram File Explorer** — the Windows desktop app (the main way to use this)
-- **Storage bot** — a chat bot for the same archive (`/search`, `/get`, …)
+- **Storage bot** — a chat bot for the same archive (`/search`, `/get`, …), running on
+  an always-on server
+
+**Version 2:** the Explorer no longer starts or stops the bot. Open the app and use it;
+the bot runs on the cloud server by itself. That is the same on every PC. The title bar
+shows **Server online** while the server's bot is checking in (it updates every minute);
+click the chip for the last heartbeat, bot version and the file count it indexes.
 
 ## Quick start (Windows)
 
 1. Download `TelegramFileExplorerSetup.exe` from
-   [Releases](https://github.com/14Som/telegram-file-explorer/releases/latest) — it
-   installs the app (and the bot) for your user, no admin rights needed. The build is
+   [Releases](https://github.com/14Som/telegram-file-bot-v2/releases/latest) — it
+   installs the app for your user, no admin rights needed. The build is
    unsigned, so SmartScreen shows an unknown-publisher warning: *More info → Run
    anyway*. Already have `TelegramFileExplorer.exe`? Run that instead; it works on
    its own.
@@ -38,11 +44,10 @@ launch — folders, names, tags, notes, favorites, thumbnails and settings.
 ## Two PCs, one account
 
 The same Telegram account works on as many PCs as you like. Each PC signs in on its
-own, then sees the same vaults and files. Only the **storage bot** is limited to one
-PC at a time — Telegram allows a single running bot, so do not enable it twice.
+own, then sees the same vaults and files. Nothing about the bot is installed or
+started on a PC — it lives on the server, so setup is identical everywhere.
 
-1. On the second PC run `TelegramFileExplorerSetup.exe` and untick **Run the storage
-   bot on this PC** (the first PC already runs it).
+1. On the second PC run `TelegramFileExplorerSetup.exe`.
 2. Open the app and sign in with the same account, then choose your vault.
 3. Close and open the app once more — the library is restored from the vault at
    startup, so the first launch only signs in.
@@ -50,9 +55,36 @@ PC at a time — Telegram allows a single running bot, so do not enable it twice
 Avoid syncing from both PCs at the same moment: each close writes a backup of the
 library and the newest one wins.
 
-To move the bot to the other PC, run setup there again with **Run the storage bot on
-this PC** ticked (stop it on the first PC first). Setup never overwrites an existing
-`.env`.
+Telegram allows only one running bot. If an old copy of the app (version 1) left a
+`TelegramFileBot.exe` running, the Explorer stops it at launch so the server's bot
+keeps working.
+
+## 24/7 on a free Oracle VM
+
+The bot only answers while its host runs. Oracle Cloud's Always Free tier keeps it
+online without leaving a PC on — it hosts the bot only; the Explorer stays local and
+needs no bot setup at all.
+
+1. Create an Oracle Cloud account with home region **Mumbai** or **Hyderabad**
+   (Always Free resources cannot change region later; signup asks for phone and
+   card verification, but the micro shape and its storage stay free).
+2. Create a VM: **Ubuntu 24.04**, shape **VM.Standard.E2.1.Micro**, and paste the
+   public key from `build/oracle-vm-key.pub` (create one with
+   `ssh-keygen -t ed25519 -f build/oracle-vm-key`).
+3. Reserve a public IPv4 (Networking > Reserved public IPs) and assign it to the
+   instance's primary private IP, so the address survives stop/start.
+4. In this folder run **Setup Cloud VM.bat** and paste that public IP
+   (or call `deploy\push.ps1 -VmHost <public-ip>` directly).
+5. Send `/stats` to the bot in Telegram. The Explorer's **Server online** chip turns
+   green within a couple of minutes and keeps showing the bot's heartbeat.
+
+The script copies `.env` straight over SSH (never through chat or git), uploads
+`data\files.db`, installs `telegram-file-bot` as a systemd service, and restarts it
+on boot. Logs:
+`ssh -i build/oracle-vm-key ubuntu@<public-ip> "sudo journalctl -u telegram-file-bot -f"`.
+The bot itself needs no inbound ports; SSH (22) is only used for deployment. If
+Oracle stops the VM for being idle, start it again from the console; the index
+survives on the boot volume.
 
 ## What the app does
 
@@ -134,22 +166,29 @@ this PC** ticked (stop it on the first PC first). Setup never overwrites an exis
   and library backup. Use the pencil next to a vault to rename it — the Telegram channel
   title changes too — or to pick an icon that tells the vaults apart.
 
-## The bot (optional)
+## The bot (runs on the server)
 
-The bot answers Telegram commands for the same archive. If `TelegramFileBot.exe` sits
-next to the Explorer and a `.env` is configured, the app starts and supervises it
-automatically — the **Bot** chip in the title bar shows its status and toggles it on or
-off. Without a `.env` the chip says the bot is not set up on this PC. The power button
-at the top left quits the app and stops the bot; closing the window does the same.
+The bot answers Telegram commands for the same archive. It runs once, on the Oracle
+VM from *24/7 on a free Oracle VM* above; the Explorer does not carry it, start it or
+stop it. Quitting the app leaves the bot online.
 
-To set it up yourself:
+While it runs, the bot keeps one pinned message in your private chat with it, marked
+`#tfeheartbeat` and refreshed every minute. The Explorer reads that message over your
+own Telegram session — no port on the VM, no token on the PC — and shows **Server
+online** in the title bar. If the heartbeat stops, the chip turns amber (*Server
+delayed*), then red (*Server offline*); the app itself keeps working because files and
+vaults live in Telegram.
+
+To run it on a PC instead (for example while setting it up, never alongside the
+server):
 
 1. [@BotFather](https://t.me/BotFather) → `/newbot` → copy the token
 2. [@userinfobot](https://t.me/userinfobot) → copy your numeric ID
 3. Copy `.env.example` to `.env` and fill in `BOT_TOKEN` and `OWNER_ID`
-4. `py -m venv .venv`, then `pip install -r requirements.txt`, then `py bot.py`
+4. `py -m venv .venv`, then `pip install -r requirements.txt`, then
+   `.venv\Scripts\python bot.py`
 
-`Start Bot.bat` and `Stop Bot.bat` do the same thing with a visible console and logs.
+Two copies polling at once make Telegram answer `409 Conflict`, so stop one first.
 
 | Command | What it does |
 |---|---|
@@ -160,7 +199,7 @@ To set it up yourself:
 | `/rename` `/move` `/retag` `/delete` | edit one file — or tap ⚙️ next to it instead |
 | `/saveas <name>` | choose the name for your next upload before sending it |
 | `/stats` `/backup` `/export [csv\|json]` | overview, snapshot now, download the index |
-| `/source` | zip of the whole project (code, launchers, EXEs, index) — never the token |
+| `/source` | zip of the whole project (code, launchers, deploy scripts, index) — never the token |
 | `/vault [sync]` | vault status; `sync` copies older files into the channel |
 
 The bot works **only in a private chat** and only for `OWNER_ID`; group messages are
@@ -200,19 +239,20 @@ uses. You can skip both — the app plays video and images without them.
 
 | Location | Contents |
 |---|---|
-| `%LOCALAPPDATA%\Programs\TelegramFileExplorer\` | installed app, the bot, and the `.env` on PCs that run the bot |
+| `%LOCALAPPDATA%\Programs\TelegramFileExplorer\` | installed app |
 | `%APPDATA%\TelegramFileExplorer\` | login session, `library.db`, settings, thumbnails, log |
-| `data\files.db` | the bot's index, plus `data\backups\` (latest 14, written daily) |
-| `.env` | your bot token — never share it, never commit it |
+| VM `~/telegram-file-bot/data/files.db` | the bot's index, plus `data\backups\` (latest 14, written daily) |
+| VM `~/telegram-file-bot/.env` | your bot token — never share it, never commit it |
 
 The Explorer never reads `BOT_TOKEN`, and your login session is never uploaded anywhere.
 
 ## Build from source
 
-Run `Build Explorer EXE.bat` — it installs PyInstaller into `.venv` and writes both
-`TelegramFileExplorer.exe` and `TelegramFileBot.exe` to the project folder. Then
-`Build Installer.bat` wraps them into `TelegramFileExplorerSetup.exe`. Desktop
-dependencies: `pip install -r desktop\requirements.txt`.
+Run `Build Explorer EXE.bat` — it installs PyInstaller into `.venv` and writes
+`TelegramFileExplorer.exe` to the project folder. Then `Build Installer.bat` wraps it
+into `TelegramFileExplorerSetup.exe`. Desktop dependencies:
+`pip install -r desktop\requirements.txt`. The bot is deployed from source with
+**Setup Cloud VM.bat**, not built as a Windows EXE.
 
 ## Limits & safety
 

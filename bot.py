@@ -15,6 +15,7 @@ import zipfile
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
+from typing import Optional
 
 from telegram import (
     ForceReply,
@@ -50,6 +51,15 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("filebot")
+
+BOT_VERSION = "2.0"
+_STARTED_AT = time.time()
+
+# The Explorer reads this pinned message over MTProto to show whether the
+# server bot is alive; it carries no secrets, just a timestamp and counts.
+HEARTBEAT_MARKER = "#tfeheartbeat"
+HEARTBEAT_EVERY = 60
+HEARTBEAT_PATH = DATA_DIR / "heartbeat.json"
 
 ICONS = {
     "document": "📄",
@@ -213,18 +223,15 @@ SOURCE_ARCHIVE_FILES = (
     "requirements.txt",
     "README.md",
     ".env.example",
-    "Start Bot.bat",
-    "Stop Bot.bat",
     "Start Explorer.bat",
     "Build Explorer EXE.bat",
+    "Setup Cloud VM.bat",
     "TelegramFileExplorer.spec",
-    "TelegramFileBot.spec",
-    "TelegramFileExplorer.exe",
-    "TelegramFileBot.exe",
+    "deploy/install.sh",
+    "deploy/push.ps1",
     "desktop/__init__.py",
     "desktop/appconfig.py",
     "desktop/applock.py",
-    "desktop/botsup.py",
     "desktop/catalog.py",
     "desktop/native.py",
     "desktop/server.py",
@@ -255,23 +262,24 @@ RESTORE_TEXT = """Telegram File Bot — restore this archive
    If you create a new bot, its file IDs will not match this index.
    Optional: VAULT_CHAT_ID for a private backup channel.
 
-3. Windows:
-   py -m venv .venv
-   .venv\\Scripts\\python -m pip install -r requirements.txt
-   .venv\\Scripts\\python -m pip install -r desktop\\requirements.txt
-   Start Bot.bat
+3. Linux server (the usual host):
+   bash deploy/install.sh
+   See README.md and "Setup Cloud VM.bat". The bot must run on one host only;
+   a second copy makes Telegram answer 409 Conflict.
 
-   Optional desktop Explorer (same PC):
-   Start Explorer.bat
-   Sign in with a QR code or a phone code (no API setup needed), then pick
-   your storage channel. Personal API credentials from my.telegram.org are
-   optional and can be added from "Use my own" on the sign-in screen.
-   Its session and local index live in %APPDATA%\\TelegramFileExplorer.
+4. Windows Explorer (optional, on any PC):
+   Start Explorer.bat, or install TelegramFileExplorerSetup.exe. Sign in with
+   a QR code or a phone code (no API setup needed), then pick your storage
+   channel. Personal API credentials from my.telegram.org are optional and can
+   be added from "Use my own" on the sign-in screen. Its session and local
+   index live in %APPDATA%\\TelegramFileExplorer.
 
-   The Explorer runs in its own window. This archive includes the built
-   Windows apps (TelegramFileExplorer.exe and TelegramFileBot.exe): opening
-   the Explorer also runs the bot. If they are missing or you want to rebuild
-   from source, run "Build Explorer EXE.bat" (needs PyInstaller).
+   The Explorer never starts or stops the bot; it just opens the library.
+   The built app (TelegramFileExplorer.exe) is included. Rebuild it from
+   source with "Build Explorer EXE.bat" (needs PyInstaller).
+
+   To run the bot on this PC instead of the server, use
+   .venv\\Scripts\\python bot.py — never at the same time as the server.
 
 Full setup and vault instructions are in README.md.
 
@@ -408,6 +416,10 @@ def stats_text() -> str:
         if len(cats) > len(shown):
             line += f" · …and {len(cats) - len(shown)} more"
         lines += ["", "📁 " + line]
+    lines += [
+        "",
+        f"🤖 Storage bot v{BOT_VERSION} · up {_human_uptime(time.time() - _STARTED_AT)}",
+    ]
     return "\n".join(lines)
 
 
@@ -847,6 +859,17 @@ def human_size(num) -> str:
         if num < 1024 or unit == "TB":
             return f"{int(num)} {unit}" if unit == "B" else f"{num:.1f} {unit}"
         num /= 1024
+
+
+def _human_uptime(seconds: float) -> str:
+    days, rest = divmod(int(max(seconds, 0)), 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes = rest // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
 
 
 def format_tags(row) -> str:
@@ -1661,6 +1684,75 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             pass
 
 
+def _heartbeat_text() -> str:
+    payload = {
+        "app": "telegram-file-bot",
+        "version": BOT_VERSION,
+        "ts": int(time.time()),
+        "files": database.file_count(),
+        "uptime": int(time.time() - _STARTED_AT),
+    }
+    return f"{HEARTBEAT_MARKER} {json.dumps(payload, separators=(',', ':'))}"
+
+
+def _read_heartbeat_id() -> Optional[int]:
+    try:
+        data = json.loads(HEARTBEAT_PATH.read_text(encoding="utf-8"))
+        return int(data.get("message_id") or 0) or None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _write_heartbeat_id(message_id: int) -> None:
+    try:
+        HEARTBEAT_PATH.write_text(
+            json.dumps({"message_id": int(message_id)}), encoding="utf-8"
+        )
+    except OSError:
+        log.debug("Could not remember the heartbeat message id")
+
+
+async def _publish_heartbeat(application: Application) -> None:
+    """Keep one pinned status message fresh so the Explorer can show the server state."""
+    bot = application.bot
+    text = _heartbeat_text()
+    message_id = application.bot_data.get("heartbeat_id") or _read_heartbeat_id()
+    if message_id:
+        try:
+            await bot.edit_message_text(
+                chat_id=OWNER_ID, message_id=int(message_id), text=text
+            )
+            application.bot_data["heartbeat_id"] = int(message_id)
+            return
+        except BadRequest as exc:
+            log.info("Replacing the heartbeat message: %s", exc)
+        except TelegramError as exc:
+            log.warning("Heartbeat edit failed: %s", exc)
+            return
+    message = await bot.send_message(
+        chat_id=OWNER_ID, text=text, disable_notification=True
+    )
+    application.bot_data["heartbeat_id"] = message.message_id
+    _write_heartbeat_id(message.message_id)
+    try:
+        await bot.pin_chat_message(
+            chat_id=OWNER_ID,
+            message_id=message.message_id,
+            disable_notification=True,
+        )
+    except TelegramError as exc:
+        log.info("Could not pin the heartbeat message: %s", exc)
+
+
+async def _heartbeat_loop(application: Application) -> None:
+    while True:
+        try:
+            await _publish_heartbeat(application)
+        except Exception:
+            log.exception("Heartbeat update failed")
+        await asyncio.sleep(HEARTBEAT_EVERY)
+
+
 async def _backup_loop() -> None:
     while True:
         await asyncio.sleep(24 * 60 * 60)
@@ -1677,14 +1769,18 @@ async def _post_init(application: Application) -> None:
         log.info("Startup index backup: %s", path.name)
     except Exception:
         log.exception("Startup backup failed")
-    application.bot_data["backup_task"] = asyncio.get_running_loop().create_task(
-        _backup_loop()
+    loop = asyncio.get_running_loop()
+    application.bot_data["backup_task"] = loop.create_task(_backup_loop())
+    application.bot_data["heartbeat_task"] = loop.create_task(
+        _heartbeat_loop(application)
     )
 
 
 async def _post_stop(application: Application) -> None:
-    task = application.bot_data.pop("backup_task", None)
-    if task is not None:
+    for name in ("heartbeat_task", "backup_task"):
+        task = application.bot_data.pop(name, None)
+        if task is None:
+            continue
         task.cancel()
         try:
             await task

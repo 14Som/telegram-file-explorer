@@ -24,14 +24,6 @@ if errorlevel 1 (
     exit /b 1
 )
 echo.
-echo Building TelegramFileBot.exe...
-".venv\Scripts\python.exe" -m PyInstaller --clean --noconfirm --distpath . --workpath build TelegramFileBot.spec
-if errorlevel 1 (
-    echo.
-    echo The bot build failed. See the messages above.
-    pause
-    exit /b 1
-)
-echo.
-echo Built TelegramFileExplorer.exe and TelegramFileBot.exe in this folder.
+echo Built TelegramFileExplorer.exe in this folder.
+echo The storage bot runs on the cloud server; there is no bot EXE to build.
 pause

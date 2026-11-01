@@ -1,16 +1,15 @@
 """Per-user Windows installer for Telegram File Explorer.
 
-The installer carries both executables (the Explorer and the storage bot) and
-never carries a bot token: the optional bot form writes a .env on the target
-PC from values the user types here. Installing again upgrades the executables
-but keeps an existing .env and the user's library data untouched.
+The Explorer only talks to Telegram as your account; the storage bot runs on
+the always-on server, so this installer carries no bot and never asks for a
+token. Installing again upgrades the app but keeps an existing .env and the
+user's library data untouched.
 """
 
 from __future__ import annotations
 
 import ctypes
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -18,16 +17,15 @@ import threading
 import time
 import winreg
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "Telegram File Explorer"
 APP_ID = "TelegramFileExplorer"
-APP_VERSION = "1.0"
-PAYLOAD_FILES = ("TelegramFileExplorer.exe", "TelegramFileBot.exe")
-TOKEN_RE = re.compile(r"\d{5,}:[A-Za-z0-9_-]{20,}")
+APP_VERSION = "2.0"
+PAYLOAD_FILES = ("TelegramFileExplorer.exe",)
 UNINSTALL_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{APP_ID}"
 CREATE_NO_WINDOW = 0x08000000
 
@@ -151,27 +149,10 @@ def register_uninstall(target: Path) -> None:
         winreg.SetValueEx(key, "EstimatedSize", 0, winreg.REG_DWORD, max(1, size // 1024))
 
 
-def _write_env(target: Path, bot: Dict[str, str]) -> str:
-    env_path = target / ".env"
-    if env_path.exists():
-        return "kept the existing .env"
-    lines = [
-        "# Created by Telegram File Explorer Setup. Keep this file private.",
-        f"BOT_TOKEN={bot['token']}",
-        f"OWNER_ID={bot['owner']}",
-    ]
-    if bot.get("vault"):
-        lines.append(f"VAULT_CHAT_ID={bot['vault']}")
-    lines.extend(["DATA_DIR=data", ""])
-    env_path.write_text("\n".join(lines), encoding="utf-8")
-    return "saved the bot configuration"
-
-
 def install(
     target: Path,
     *,
     desktop_shortcut: bool,
-    bot: Optional[Dict[str, str]],
     close_existing: bool = False,
 ) -> Dict[str, Any]:
     source = payload_dir()
@@ -188,6 +169,11 @@ def install(
         raise RuntimeError(
             "Telegram File Explorer is running. Close it and run setup again."
         ) from None
+    # Version 1 shipped a local bot; it would fight the server bot (Telegram 409).
+    try:
+        (target / "TelegramFileBot.exe").unlink(missing_ok=True)
+    except OSError:
+        pass
     (target / "Uninstall.cmd").write_text(UNINSTALL_SCRIPT, encoding="utf-8")
     make_shortcut(
         shell_folder(
@@ -206,10 +192,7 @@ def install(
             target,
         )
     register_uninstall(target)
-    bot_note = _write_env(target, bot) if bot else ""
-    if not bot and (target / ".env").is_file():
-        bot_note = "kept the existing bot configuration"
-    return {"dir": str(target), "bot": bot_note}
+    return {"dir": str(target)}
 
 
 def _say(message: str) -> None:
@@ -234,26 +217,16 @@ def _silent(argv: list[str]) -> int:
             return ""
 
     target = Path(value("--dir") or default_install_dir()).expanduser()
-    token = value("--bot-token")
-    owner = value("--owner-id")
-    vault = value("--vault-id")
-    bot = None
-    if token:
-        if not TOKEN_RE.fullmatch(token) or not owner.isdigit():
-            _say("Invalid bot token or owner id")
-            return 2
-        bot = {"token": token, "owner": owner, "vault": vault}
     try:
         result = install(
             target,
             desktop_shortcut="--no-desktop" not in argv,
-            bot=bot,
             close_existing="--force" in argv,
         )
     except Exception as exc:  # surfaced for scripted installs
         _say(f"Install failed: {exc}")
         return 1
-    _say(f"Installed to {result['dir']} ({result['bot'] or 'bot not configured'})")
+    _say(f"Installed to {result['dir']}")
     if "--no-launch" not in argv:
         subprocess.Popen([str(target / "TelegramFileExplorer.exe")], cwd=str(target))
     return 0
@@ -294,7 +267,12 @@ class SetupWindow:
         ttk.Label(frame, text=APP_NAME, font=("Segoe UI", 16, "bold")).pack(anchor="w")
         ttk.Label(
             frame,
-            text=f"Version {APP_VERSION} — installs the Explorer and the storage bot. No admin rights needed.",
+            text=(
+                f"Version {APP_VERSION} — installs the Explorer. The storage bot "
+                "stays on your server, so there is nothing to start here. "
+                "No admin rights needed."
+            ),
+            wraplength=560,
         ).pack(anchor="w", pady=(2, 14))
 
         ttk.Label(frame, text="Install location").pack(anchor="w")
@@ -311,40 +289,16 @@ class SetupWindow:
         ttk.Checkbutton(frame, text="Create a desktop shortcut", variable=self.desktop_var).pack(anchor="w")
         ttk.Checkbutton(frame, text="Start Telegram File Explorer when setup finishes", variable=self.launch_var).pack(anchor="w", pady=(0, 14))
 
-        box = ttk.LabelFrame(frame, text="Storage bot (optional)", padding=12)
-        box.pack(fill="x")
-        self.bot_var = tk.BooleanVar(value=False)
-        self.bot_check = ttk.Checkbutton(
-            box,
-            text="Run the storage bot on this PC",
-            variable=self.bot_var,
-            command=self.toggle_bot,
-        )
-        self.bot_check.pack(anchor="w")
         ttk.Label(
-            box,
+            frame,
             text=(
-                "Leave this off if another PC already runs the bot — only one PC can run it at a time. "
-                "The bot is already part of your account; enabling it here just starts it on this PC."
+                "Sign in with your Telegram account on this PC. The library is "
+                "restored from your vault, and the bot answers in Telegram without "
+                "anything being started here."
             ),
             wraplength=520,
             foreground="#555555",
-        ).pack(anchor="w", pady=(2, 8))
-
-        self.token_var = tk.StringVar()
-        self.owner_var = tk.StringVar()
-        self.vault_var = tk.StringVar()
-        self.bot_widgets: list[tk.Widget] = []
-        for label, var, hint in (
-            ("Bot token", self.token_var, "From @BotFather — the same token as your other PC."),
-            ("Your numeric Telegram user ID", self.owner_var, "The OWNER_ID from your existing .env."),
-            ("Vault channel ID (optional)", self.vault_var, "The VAULT_CHAT_ID from your existing .env; the app can find vaults on its own."),
-        ):
-            ttk.Label(box, text=label).pack(anchor="w", pady=(4, 0))
-            entry = ttk.Entry(box, textvariable=var, show="*" if label == "Bot token" else "")
-            entry.pack(fill="x", pady=(2, 0))
-            self.bot_widgets.append(entry)
-            ttk.Label(box, text=hint, foreground="#777777").pack(anchor="w")
+        ).pack(anchor="w", pady=(0, 10))
 
         self.status = ttk.Label(frame, text="", foreground="#555555")
         self.status.pack(anchor="w", pady=(14, 6))
@@ -355,18 +309,12 @@ class SetupWindow:
         self.close_btn = ttk.Button(buttons, text="Close", command=root.destroy)
         self.close_btn.pack(side="right", padx=(0, 8))
 
-        self.toggle_bot()
         root.update_idletasks()
         width = max(600, root.winfo_reqwidth())
         height = root.winfo_reqheight()
         x = (root.winfo_screenwidth() - width) // 2
         y = (root.winfo_screenheight() - height) // 3
         root.geometry(f"{width}x{height}+{x}+{y}")
-
-    def toggle_bot(self) -> None:
-        state = "normal" if self.bot_var.get() else "disabled"
-        for widget in self.bot_widgets:
-            widget.configure(state=state)
 
     def browse(self) -> None:
         chosen = filedialog.askdirectory(initialdir=self.dir_var.get(), title="Choose an install folder")
@@ -376,30 +324,13 @@ class SetupWindow:
     def set_busy(self, busy: bool) -> None:
         self.busy = busy
         state = "disabled" if busy else "normal"
-        for widget in (self.dir_entry, self.browse_btn, self.install_btn, self.close_btn, self.bot_check):
+        for widget in (self.dir_entry, self.browse_btn, self.install_btn, self.close_btn):
             widget.configure(state=state)
-        if not busy:
-            self.toggle_bot()
 
     def start(self) -> None:
         if self.busy:
             return
         target = Path(self.dir_var.get().strip() or default_install_dir()).expanduser()
-        bot: Optional[Dict[str, str]] = None
-        if self.bot_var.get():
-            token = self.token_var.get().strip()
-            owner = self.owner_var.get().strip()
-            vault = self.vault_var.get().strip()
-            if not TOKEN_RE.fullmatch(token):
-                messagebox.showerror("Bot token", "That does not look like a bot token. It looks like 123456789:AA…, from @BotFather.")
-                return
-            if not owner.isdigit():
-                messagebox.showerror("Owner ID", "Enter your numeric Telegram user ID, for example 123456789.")
-                return
-            if vault and not re.fullmatch(r"-?\d+", vault):
-                messagebox.showerror("Vault channel ID", "The vault channel ID is numeric, for example -1001234567890.")
-                return
-            bot = {"token": token, "owner": owner, "vault": vault}
         if app_running() and not messagebox.askokcancel(
             "Telegram File Explorer is running",
             "Setup will close the running app so it can replace its files. Continue?",
@@ -413,7 +344,7 @@ class SetupWindow:
         def work() -> None:
             try:
                 result = install(
-                    target, desktop_shortcut=desktop, bot=bot, close_existing=True
+                    target, desktop_shortcut=desktop, close_existing=True
                 )
             except Exception as exc:
                 self.root.after(0, lambda: self.failed(exc))
@@ -429,10 +360,9 @@ class SetupWindow:
 
     def finished(self, result: Dict[str, Any], launch: bool) -> None:
         self.set_busy(False)
-        note = f"\n\nBot: {result['bot']}." if result.get("bot") else ""
         messagebox.showinfo(
             "Setup complete",
-            f"{APP_NAME} was installed to:\n{result['dir']}{note}\n\n"
+            f"{APP_NAME} was installed to:\n{result['dir']}\n\n"
             "Sign in with the same Telegram account on this PC. If your library was "
             "already saved to the vault, it is restored after the first restart.",
         )

@@ -11,6 +11,7 @@ import logging
 import logging.handlers
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -46,6 +47,7 @@ except Exception as exc:  # missing packages or a broken build
         pass
     raise SystemExit(1)
 
+CREATE_NO_WINDOW = 0x08000000
 SERVER_FILE = appconfig.HOME / "server.json"
 WEBVIEW_DIR = appconfig.HOME / "webview"
 MUTEX_NAME = "Local\\TelegramFileExplorer"
@@ -412,7 +414,7 @@ def run_window(url: str, uv: Optional[uvicorn.Server], thread: Optional[threadin
             server.QUIT.set()
             uv.should_exit = True
             if thread is not None:
-                # Vault save and stopping the storage bot both run on the way out.
+                # The vault save runs on the way out.
                 thread.join(timeout=20)
                 if thread.is_alive():
                     # Open media streams can delay uvicorn's graceful stop.
@@ -426,9 +428,24 @@ def run_window(url: str, uv: Optional[uvicorn.Server], thread: Optional[threadin
             clear_server_file()
 
 
+def stop_local_bot() -> None:
+    """Only the cloud server may poll Telegram; a local leftover makes it 409."""
+    try:
+        result = subprocess.run(
+            ["taskkill", "/f", "/im", "TelegramFileBot.exe"],
+            capture_output=True,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except OSError:
+        return
+    if result.returncode == 0:
+        log.info("Stopped a leftover local storage bot")
+
+
 def run() -> int:
     setup_logging()
     log.info("Starting Telegram File Explorer (native window)")
+    stop_local_bot()
     try:
         import cryptg  # noqa: F401
 

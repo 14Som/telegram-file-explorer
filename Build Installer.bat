@@ -2,7 +2,6 @@
 title Build Telegram File Explorer Setup
 cd /d "%~dp0"
 if not exist "TelegramFileExplorer.exe" goto missing
-if not exist "TelegramFileBot.exe" goto missing
 if not exist ".venv\Scripts\python.exe" (
     echo The virtual environment is missing. Run "Build Explorer EXE.bat" first.
     exit /b 1
@@ -31,7 +30,6 @@ set "TK_LIBRARY=%BASEPY%\tcl\tk8.6"
     --name TelegramFileExplorerSetup ^
     --icon "%CD%\desktop\ui\app.ico" ^
     --add-data "%CD%\TelegramFileExplorer.exe;payload" ^
-    --add-data "%CD%\TelegramFileBot.exe;payload" ^
     --add-data "%CD%\desktop\ui\app.ico;." ^
     --distpath "%CD%\build\setup" --workpath "%CD%\build\setup-work" --specpath "%CD%\build" ^
     installer\setup.py
@@ -48,7 +46,7 @@ pause
 exit /b 0
 
 :missing
-echo TelegramFileExplorer.exe and TelegramFileBot.exe must exist in this folder.
+echo TelegramFileExplorer.exe must exist in this folder.
 echo Run "Build Explorer EXE.bat" first.
 pause
 exit /b 1

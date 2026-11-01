@@ -32,11 +32,11 @@ from starlette.concurrency import run_in_threadpool
 from . import (
     appconfig,
     applock,
-    botsup,
     filetypes,
     iteminfo,
     mediatools,
     movielookup,
+    serverstatus,
     starlookup,
     storyboard,
     streamcache,
@@ -70,7 +70,7 @@ COOKIE = "tfe_session"
 UI_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent)) / "desktop" / "ui"
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # API paths that stay reachable while the app is PIN-locked (status, lock
-# control, bot supervision and quit — none of them expose file data).
+# control and quit — none of them expose file data).
 LOCK_OPEN_PATHS = {
     "/api/ping",
     "/api/status",
@@ -79,8 +79,6 @@ LOCK_OPEN_PATHS = {
     "/api/pin/recover",
     "/api/pin/reset",
     "/api/quit",
-    "/api/bot/start",
-    "/api/bot/stop",
 }
 # Files above Telegram's per-file cap are split into volumes; this is the
 # largest source file the app will accept and split.
@@ -678,8 +676,6 @@ async def lifespan(app: FastAPI):
     )
     if marked:
         log.info("Kept %d custom thumbnail(s) visible", marked)
-    state.bot = botsup.Supervisor()
-    state.bot.start_watching()
     info = state.service.status()
     if info["authorized"] and info.get("vault"):
         # Snapshot zips uploaded since the last sync are indexed on boot; hide
@@ -691,12 +687,6 @@ async def lifespan(app: FastAPI):
     finally:
         for task in list(state.tasks):
             task.cancel()
-        # Stop the bot first so no bot job keeps writing while the app exits.
-        state.bot.shutdown()
-        try:
-            await run_in_threadpool(botsup.terminate)
-        except Exception:
-            log.exception("Could not stop the storage bot on close")
         info = state.service.status()
         if info["authorized"] and info.get("vault"):
             try:
@@ -802,7 +792,7 @@ app.mount("/static", StaticFiles(directory=str(UI_DIR)), name="static")
 # --------------------------------------------------------------------- status
 @app.get("/api/ping")
 async def ping():
-    return {"app": "telegram-file-explorer", "version": "1.0"}
+    return {"app": "telegram-file-explorer", "version": "2.0"}
 
 
 @app.get("/api/status")
@@ -814,12 +804,30 @@ async def status(request: Request):
     payload["stats"] = state.catalog.stats(chat_id)
     payload["folder_count"] = len(state.catalog.folders(chat_id))
     payload["tag_count"] = len(state.catalog.tags(chat_id))
-    payload["bot"] = state.bot.snapshot()
     payload["locked"] = state.locked
     payload["pin_set"] = applock.has_pin()
     payload["pin_skipped"] = applock.pin_skipped()
     payload["pin_recovery"] = bool(payload.get("authorized")) and applock.has_pin()
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+SERVER_STATUS_SECONDS = 20.0
+
+
+@app.get("/api/server")
+async def server_status(request: Request):
+    state = _state(request)
+    cached = getattr(state, "server_status", None)
+    now = time.time()
+    if cached and now - cached.get("at", 0.0) < SERVER_STATUS_SECONDS:
+        return JSONResponse(cached["data"], headers={"Cache-Control": "no-store"})
+    info = state.service.status()
+    if not (info.get("authorized") and info.get("vault")):
+        data = {"state": "unknown", "reason": "Sign-in needed"}
+    else:
+        data = await serverstatus.read(state.service)
+    state.server_status = {"at": now, "data": data}
+    return JSONResponse(data, headers={"Cache-Control": "no-store"})
 
 
 # ------------------------------------------------------------------ app lock
@@ -999,18 +1007,6 @@ async def pin_reset(body: PinResetBody, request: Request):
     state.locked = False
     log.info("PIN reset with a Telegram recovery code")
     return {"pin_set": True, "unlocked": True}
-
-
-@app.post("/api/bot/start")
-async def bot_start(request: Request):
-    supervisor = _state(request).bot
-    return JSONResponse({"bot": await run_in_threadpool(supervisor.turn_on)})
-
-
-@app.post("/api/bot/stop")
-async def bot_stop(request: Request):
-    supervisor = _state(request).bot
-    return JSONResponse({"bot": await run_in_threadpool(supervisor.turn_off)})
 
 
 def _thumb_cached(item_id: int) -> bool:
@@ -1564,12 +1560,6 @@ async def reconnect(request: Request):
 
 @app.post("/api/quit")
 async def quit_app(request: Request):
-    state = _state(request)
-    state.bot.shutdown()
-    try:
-        await run_in_threadpool(botsup.terminate)
-    except Exception:
-        log.exception("Could not stop the storage bot during quit")
     QUIT.set()
     return {"quitting": True}
 
