@@ -767,6 +767,11 @@ function renderVaultMenu() {
   }
   for (const vault of S.vaults) {
     const active = Boolean(vault.active);
+    const isDefault = Boolean(vault.default);
+    const sub = [
+      isDefault ? "Opens by default" : "",
+      vault.username ? `@${vault.username}` : "Private channel"
+    ].filter(Boolean).join(" · ");
     const row = h("button", {
       class: "vault-item" + (active ? " active" : ""),
       type: "button",
@@ -777,11 +782,24 @@ function renderVaultMenu() {
       h("span", { class: "vault-item-mark", text: vaultIcon(vault) }),
       h("span", { class: "vault-item-text" },
         h("span", { class: "vault-item-title", text: vault.title || String(vault.id) }),
-        h("span", { class: "vault-item-sub", text: vault.username ? `@${vault.username}` : "Private channel" })
+        h("span", { class: "vault-item-sub", text: sub })
       ),
       active ? h("span", { class: "vault-item-check", html: svgRaw("check") }) : null
     );
     row.addEventListener("click", () => switchVault(vault));
+    const star = h("button", {
+      class: "vault-edit" + (isDefault ? " is-default" : ""),
+      type: "button",
+      title: isDefault
+        ? `${vault.title || vault.id} opens by default — click to open the last used vault instead`
+        : `Open ${vault.title || vault.id} by default on launch`,
+      disabled: S.vaultBusy || !(S.status && S.status.authorized),
+      html: svgRaw(isDefault ? "starFilled" : "star")
+    });
+    star.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleDefaultVault(vault);
+    });
     const edit = h("button", {
       class: "vault-edit",
       type: "button",
@@ -793,7 +811,7 @@ function renderVaultMenu() {
       event.stopPropagation();
       promptEditVault(vault);
     });
-    rows.push(h("div", { class: "vault-row" }, row, edit));
+    rows.push(h("div", { class: "vault-row" }, row, star, edit));
   }
   if (!rows.length) {
     rows.push(h("div", { class: "vault-empty", text: "No vaults found yet." }));
@@ -924,6 +942,35 @@ async function switchVault(vault) {
   } finally {
     S.vaultBusy = false;
     updateChrome();
+  }
+}
+
+async function toggleDefaultVault(vault) {
+  if (!vault || S.vaultBusy) return;
+  const makingDefault = !vault.default;
+  S.vaultBusy = true;
+  renderVaultMenu();
+  try {
+    const data = await api("/api/vaults/default", {
+      method: "POST",
+      body: { id: makingDefault ? vault.id : "" }
+    });
+    S.vaults = data.vaults || [];
+    S.status = { ...S.status, vault: data.vault || S.status.vault, vaults: S.vaults };
+    updateChrome();
+    toast(
+      makingDefault
+        ? `${vault.title || vault.id} opens by default.`
+        : "The last used vault opens on launch.",
+      "success",
+      4000
+    );
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    S.vaultBusy = false;
+    updateChrome();
+    renderVaultMenu();
   }
 }
 
@@ -7125,7 +7172,7 @@ function bindEvents() {
   $("modelBtn").addEventListener("click", () => openModelViewer(selectedItem()));
   $("cadBtn").addEventListener("click", () => openExternalItem(selectedItem()));
   $("clearTagBtn").addEventListener("click", () => navigateScope({ navMode: "all", tag: "" }));
-  $("newFolderBtn").addEventListener("click", () => promptNewFolder(S.folder));
+  $("newFolderBtn").addEventListener("click", () => promptNewFolder(""));
   $("filterBtn").addEventListener("click", promptFilters);
   $("syncBtn").addEventListener("click", () => startSync(false));
   $("uploadBtn").addEventListener("click", () => $("fileInput").click());

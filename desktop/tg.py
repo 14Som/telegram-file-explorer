@@ -301,12 +301,21 @@ class TelegramService:
         self._vaults_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ state
-    def _public_vaults(self) -> List[Dict[str, Any]]:
+    def _flagged_vaults(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         active_id = str((self._vault or {}).get("id") or "")
-        entries = [
-            {**vault, "active": vault["id"] == active_id}
-            for vault in self._vault_registry
+        default_id = str(self._settings.get("default_vault") or "")
+        return [
+            {
+                **vault,
+                "active": vault["id"] == active_id,
+                "default": vault["id"] == default_id,
+            }
+            for vault in entries
         ]
+
+    def _public_vaults(self) -> List[Dict[str, Any]]:
+        default_id = str(self._settings.get("default_vault") or "")
+        entries = self._flagged_vaults(self._vault_registry)
         if self._vault and not any(entry["active"] for entry in entries):
             entries.insert(
                 0,
@@ -319,6 +328,7 @@ class TelegramService:
                         entry.get("icon") for entry in entries
                     ),
                     "active": True,
+                    "default": str(self._vault["id"]) == default_id,
                 },
             )
         return entries[: appconfig.VAULT_LIMIT]
@@ -801,13 +811,31 @@ class TelegramService:
         }
 
     async def _resolve_vault(self) -> None:
-        raw = str(self._settings.get("vault") or "").strip()
+        preferred = str(self._settings.get("default_vault") or "").strip()
+        last = str(self._settings.get("vault") or "").strip()
+        raw = preferred or last
         if not raw:
             raise TGError("Choose the Telegram channel that stores your files.")
         if not self._authorized:
             return
-        entity, info = await self._resolve_target(raw)
+        try:
+            entity, info = await self._resolve_target(raw)
+        except TGError:
+            if not preferred or not last:
+                raise
+            entity, info = await self._resolve_target(last)
         self._activate_vault(entity, info)
+
+    def set_default_vault(self, vault: str = "") -> Dict[str, Any]:
+        """Remember which vault opens on launch; empty means last used."""
+        raw = str(vault or "").strip()
+        if raw:
+            known = {entry["id"] for entry in self._vault_registry}
+            current = str((self._vault or {}).get("id") or "")
+            if raw not in known and raw != current:
+                raise TGError("That storage vault is not in the list.")
+        self._settings = appconfig.save_settings({"default_vault": raw})
+        return self.status()
 
     def _active_chat_id(self) -> Optional[int]:
         try:
@@ -826,20 +854,14 @@ class TelegramService:
             and self._vaults_cache is not None
             and now - self._vaults_cache_at < 120
         ):
-            return [
-                {**entry, "active": entry["id"] == str((self._vault or {}).get("id") or "")}
-                for entry in self._vaults_cache
-            ]
+            return self._flagged_vaults(self._vaults_cache)
         async with self._vaults_lock:
             if (
                 not refresh
                 and self._vaults_cache is not None
                 and time.time() - self._vaults_cache_at < 120
             ):
-                return [
-                    {**entry, "active": entry["id"] == str((self._vault or {}).get("id") or "")}
-                    for entry in self._vaults_cache
-                ]
+                return self._flagged_vaults(self._vaults_cache)
             merged: Dict[str, Dict[str, str]] = {
                 entry["id"]: dict(entry) for entry in self._vault_registry
             }
@@ -883,10 +905,7 @@ class TelegramService:
                 pass
             self._vaults_cache = [dict(entry) for entry in self._vault_registry]
             self._vaults_cache_at = time.time()
-            return [
-                {**entry, "active": entry["id"] == active_id}
-                for entry in self._vault_registry
-            ]
+            return self._flagged_vaults(self._vault_registry)
 
     async def _scan_vaults(
         self, client: TelegramClient, found: Dict[str, Dict[str, str]]

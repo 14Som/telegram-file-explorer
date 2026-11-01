@@ -212,6 +212,7 @@ def _merge_settings(backup_path: Path) -> None:
             "api_hash",
             "vault",
             "vault_title",
+            "default_vault",
             "pin_salt",
             "pin_hash",
             "pin_skipped",

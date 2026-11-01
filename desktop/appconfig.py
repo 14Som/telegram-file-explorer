@@ -32,6 +32,7 @@ DEFAULTS: Dict[str, Any] = {
     "api_hash": "",
     "vault": "",
     "vault_title": "",
+    "default_vault": "",
     "vaults": "[]",
     "helper_bot": "",
     "run_bot": "",

@@ -124,6 +124,10 @@ class VaultSwitchBody(BaseModel):
     id: str
 
 
+class VaultDefaultBody(BaseModel):
+    id: str = ""
+
+
 class VaultCreateBody(BaseModel):
     name: str
 
@@ -1389,6 +1393,12 @@ async def switch_vault(body: VaultSwitchBody, request: Request):
         raise TGError("Choose a vault first.")
     await state.service.set_vault(body.id)
     return await _after_vault_change(state)
+
+
+@app.post("/api/vaults/default")
+async def set_default_vault(body: VaultDefaultBody, request: Request):
+    state = _state(request)
+    return state.service.set_default_vault(body.id)
 
 
 @app.post("/api/vaults/create")
