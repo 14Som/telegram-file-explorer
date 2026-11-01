@@ -258,6 +258,58 @@ a { color: var(--accent); }
     linear-gradient(180deg, var(--accent), var(--accent-strong));
 }
 
+/* The library moves a host's children into an inner viewport, so restore the
+   flex/grid layout those containers relied on. */
+[data-overlayscrollbars~=host].sidebar,
+[data-overlayscrollbars~=host].vault-list,
+[data-overlayscrollbars~=host].preview-scroll,
+[data-overlayscrollbars~=host].login-card,
+[data-overlayscrollbars~=host].picker-tree,
+[data-overlayscrollbars~=host].channel-list,
+[data-overlayscrollbars~=host].lock-vault-list,
+[data-overlayscrollbars~=host].star-pick-list,
+[data-overlayscrollbars~=host].star-portrait-grid,
+[data-overlayscrollbars~=host].movie-cast,
+[data-overlayscrollbars~=host].movie-results,
+[data-overlayscrollbars~=host].check-list,
+[data-overlayscrollbars~=host].batch-preview {
+  display: flex;
+  flex-direction: column !important;
+}
+.sidebar > [data-overlayscrollbars-viewport],
+.vault-list > [data-overlayscrollbars-viewport],
+.preview-scroll > [data-overlayscrollbars-viewport],
+.login-card > [data-overlayscrollbars-viewport],
+.picker-tree > [data-overlayscrollbars-viewport] {
+  display: flex;
+  flex-direction: column;
+}
+.picker-tree > [data-overlayscrollbars-viewport] { gap: 1px; }
+.channel-list > [data-overlayscrollbars-viewport],
+.lock-vault-list > [data-overlayscrollbars-viewport],
+.star-pick-list > [data-overlayscrollbars-viewport],
+.movie-results > [data-overlayscrollbars-viewport],
+.check-list > [data-overlayscrollbars-viewport],
+.batch-preview > [data-overlayscrollbars-viewport] {
+  display: grid;
+}
+.channel-list > [data-overlayscrollbars-viewport] { gap: 5px; }
+.lock-vault-list > [data-overlayscrollbars-viewport] { gap: 6px; }
+.star-pick-list > [data-overlayscrollbars-viewport] { gap: 5px; }
+.movie-results > [data-overlayscrollbars-viewport] { gap: 5px; }
+.check-list > [data-overlayscrollbars-viewport] { gap: 2px; }
+.batch-preview > [data-overlayscrollbars-viewport] { gap: 2px; }
+.star-portrait-grid > [data-overlayscrollbars-viewport] {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 7px;
+}
+.movie-cast > [data-overlayscrollbars-viewport] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 .app {
   height: 100%;
   display: grid;

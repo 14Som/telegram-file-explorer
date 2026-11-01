@@ -7617,21 +7617,30 @@ const SCROLLBAR_TARGETS = [
 ].join(",");
 const scrollInstances = new Map();
 
+function scrollbarHostIntact(node) {
+  return Boolean(node.querySelector(":scope > [data-overlayscrollbars-viewport]"));
+}
+
 function enhanceScrollbars() {
   const lib = window.OverlayScrollbarsGlobal;
   if (!lib) return;
-  const nodes = Array.from(document.querySelectorAll(SCROLLBAR_TARGETS));
-  for (const node of nodes) {
+  // Render code that replaces a host's children wipes the library's viewport,
+  // so rebuild those instances instead of leaving a bare flex-row host behind.
+  for (const [node, instance] of scrollInstances) {
+    if (node.isConnected && scrollbarHostIntact(node)) continue;
+    try {
+      instance.destroy();
+    } catch (_) {
+      /* already detached */
+    }
+    scrollInstances.delete(node);
+  }
+  for (const node of document.querySelectorAll(SCROLLBAR_TARGETS)) {
     if (scrollInstances.has(node) || !node.isConnected || !node.offsetParent) continue;
     const instance = lib.OverlayScrollbars(node, {
       scrollbars: { autoHide: "leave", autoHideDelay: 500, clickScroll: true }
     });
     if (instance) scrollInstances.set(node, instance);
-  }
-  for (const [node, instance] of scrollInstances) {
-    if (node.isConnected) continue;
-    instance.destroy();
-    scrollInstances.delete(node);
   }
 }
 
@@ -7640,15 +7649,12 @@ function setupScrollbars() {
   if (!lib) return;
   if (lib.ClickScrollPlugin) lib.OverlayScrollbars.plugin(lib.ClickScrollPlugin);
   enhanceScrollbars();
-  let queued = false;
-  new MutationObserver(() => {
-    if (queued) return;
-    queued = true;
-    requestAnimationFrame(() => {
-      queued = false;
-      enhanceScrollbars();
-    });
-  }).observe(document.body, { childList: true, subtree: true });
+  // Runs as a microtask, before paint, so a rebuilt list never flashes its
+  // unwrapped (flex-row) layout.
+  new MutationObserver(enhanceScrollbars).observe(document.body, {
+    childList: true,
+    subtree: true
+  });
 }
 
 function scrollTargets(node) {
