@@ -2826,6 +2826,14 @@ a { color: var(--accent); }
 .thumb-choice:hover { border-color: var(--border-strong); }
 .thumb-choice.selected { border-color: var(--accent); }
 .thumb-choice.selected span { color: var(--accent); font-weight: 600; }
+.thumb-choice.anchor { border-style: dashed; border-color: var(--border-strong); }
+.thumb-choice { position: relative; }
+.thumb-choice.loading { cursor: default; }
+.thumb-choice.loading img { visibility: hidden; }
+.thumb-choice.loading .spinner { position: absolute; top: 50%; left: 50%; margin: -9px 0 0 -9px; }
+.thumb-refine { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.thumb-refine:empty { display: none; }
+.thumb-refine .modal-note { margin-top: 0; }
 .thumb-picker-tools { display: flex; gap: 8px; margin-top: 10px; }
 .thumb-picker-tools:empty { display: none; }
 .shortcut-grid { display: grid; grid-template-columns: auto 1fr; gap: 7px 14px; margin: 2px 0 14px; font-size: 11.5px; }

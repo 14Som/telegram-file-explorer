@@ -3693,10 +3693,65 @@ function openThumbPicker(item) {
     ));
     return;
   }
+  const COUNT = 18;
   const times = [];
-  for (let step = 1; step <= 9; step += 1) {
-    times.push(Math.round(duration * 1000 * (step / 10)));
+  for (let step = 1; step <= COUNT; step += 1) {
+    times.push(Math.round(duration * 1000 * (step / (COUNT + 1))));
   }
+  const fine = document.createElement("div");
+  fine.className = "thumb-refine";
+  body.append(fine);
+  const openFine = (time, dataUrl) => {
+    fine.innerHTML = "";
+    const head = document.createElement("p");
+    head.className = "muted small";
+    head.textContent = `Closer around ${humanDuration(time / 1000)}. Tap a frame to keep it.`;
+    const use = sheetButton(
+      "check",
+      "Use this frame",
+      "Keep the frame you just tapped",
+      () => {
+        picked = true;
+        chooseThumbFrame(item, dataUrl);
+      }
+    );
+    const strip = document.createElement("div");
+    strip.className = "thumb-picker";
+    fine.append(head, use, strip);
+    const width = Math.max(0.4, Math.min(duration / COUNT, 12, Math.max(0.2, duration - 0.2)));
+    const start = Math.max(0, Math.min(time / 1000 - width / 2, Math.max(0, duration - 0.2 - width)));
+    const step = width / 8;
+    for (let frame = 0; frame < 9; frame += 1) {
+      const at = Math.round((start + step * frame) * 1000);
+      const cell = document.createElement("button");
+      cell.type = "button";
+      cell.className = "thumb-cell";
+      cell.innerHTML = '<div class="spinner small"></div>';
+      strip.append(cell);
+      setTimeout(() => {
+        let data = "";
+        try { data = AndroidBridge.frameAt(url, at); } catch (_) { data = ""; }
+        cell.innerHTML = "";
+        if (data && data.indexOf("data:image/") === 0) {
+          const img = document.createElement("img");
+          img.src = data;
+          img.alt = "";
+          cell.append(img);
+          const label = document.createElement("small");
+          label.textContent = humanDuration(at / 1000);
+          cell.append(label);
+          cell.addEventListener("click", () => {
+            picked = true;
+            chooseThumbFrame(item, data);
+          });
+        } else {
+          cell.classList.add("empty");
+          cell.textContent = "No frame";
+        }
+      }, frame * 250);
+    }
+    try { fine.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (_) {}
+  };
   let pending = times.length;
   let usable = 0;
   let picked = false;
@@ -3721,17 +3776,14 @@ function openThumbPicker(item) {
         const label = document.createElement("small");
         label.textContent = humanDuration(time / 1000);
         cell.append(label);
-        cell.addEventListener("click", () => {
-          picked = true;
-          chooseThumbFrame(item, data);
-        });
+        cell.addEventListener("click", () => openFine(time, data));
       } else {
         cell.classList.add("empty");
         cell.textContent = "No frame";
       }
       if (!pending) {
         info.textContent = usable
-          ? "Tap the picture you want as the thumbnail."
+          ? "Tap a picture, then choose from nine finer moments around it."
           : "No frames could be read from this video.";
       }
     }, index * 500);

@@ -2489,18 +2489,10 @@ async function loadNav() {
     toast(error.message, "error");
   }
 }
-const FOLD_KEY = "tfe_fold_collapsed";
-function collapsedFolders() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(FOLD_KEY) || "[]");
-    return new Set(Array.isArray(raw) ? raw.map((v) => String(v).toLowerCase()) : []);
-  } catch {
-    return new Set();
-  }
-}
-function saveCollapsedFolders(set) {
-  try { localStorage.setItem(FOLD_KEY, JSON.stringify([...set])); } catch { /* keep UI-only pref best effort */ }
-}
+// The UI is served from a fresh random port each launch, so localStorage is
+// wiped with the origin. Folder expansion therefore lives for one session and
+// every folder starts collapsed.
+let expandedFolders = new Set();
 function renderSidebar() {
   const stats = S.nav.stats || {};
   $("countAll").textContent = stats.count ? String(stats.count) : "";
@@ -2527,18 +2519,21 @@ function renderSidebar() {
   const folderList = $("folderList");
   folderList.replaceChildren();
   const folders = S.nav.folders || [];
-  const foldSet = collapsedFolders();
   const lowerPath = (entry) => String(entry.folder || "").toLowerCase();
   const parentFolders = folders.filter((entry) =>
     folders.some((other) => String(other.parent || "").toLowerCase() === lowerPath(entry)));
+  const byPath = new Map(folders.map((entry) => [lowerPath(entry), entry]));
   const isHiddenByCollapse = (entry) => {
-    const path = lowerPath(entry);
-    for (const collapsed of foldSet) {
-      if (path.startsWith(collapsed + "/")) return true;
+    let parent = String(entry.parent || "").toLowerCase();
+    while (parent) {
+      const node = byPath.get(parent);
+      if (!node) return false;
+      if (!expandedFolders.has(parent)) return true;
+      parent = String(node.parent || "").toLowerCase();
     }
     return false;
   };
-  updateFoldToggle(folders, parentFolders, foldSet);
+  updateFoldToggle(parentFolders);
   if (!folders.length) {
     folderList.append(h("div", { class: "side-empty", text: "No folders yet" }));
   } else {
@@ -2546,7 +2541,7 @@ function renderSidebar() {
       if (isHiddenByCollapse(folder)) continue;
       const depth = Math.min(folder.depth || 0, 8);
       const hasChildren = parentFolders.some((entry) => entry.folder === folder.folder);
-      const open = !foldSet.has(lowerPath(folder));
+      const open = expandedFolders.has(lowerPath(folder));
       const toggle = h("span", {
         class: "tree-chev" + (open ? " open" : "") + (hasChildren ? "" : " leaf"),
         title: hasChildren ? (open ? "Collapse" : "Expand") : "",
@@ -2556,10 +2551,9 @@ function renderSidebar() {
       if (hasChildren) {
         toggle.addEventListener("click", (event) => {
           event.stopPropagation();
-          const set = collapsedFolders();
           const key = lowerPath(folder);
-          if (set.has(key)) set.delete(key); else set.add(key);
-          saveCollapsedFolders(set);
+          if (expandedFolders.has(key)) expandedFolders.delete(key);
+          else expandedFolders.add(key);
           renderSidebar();
         });
       }
@@ -2660,19 +2654,20 @@ function renderSidebar() {
   updateBreadcrumb();
   updateStatusCounts();
 }
-function updateFoldToggle(folders, parentFolders, foldSet) {
+function updateFoldToggle(parentFolders) {
   const btn = $("foldToggleBtn");
   if (!btn) return;
   const lowerPath = (entry) => String(entry.folder || "").toLowerCase();
-  const anyOpen = parentFolders.some((entry) => !foldSet.has(lowerPath(entry)));
+  const anyOpen = parentFolders.some((entry) => expandedFolders.has(lowerPath(entry)));
   btn.hidden = !parentFolders.length;
   setIcon(btn, anyOpen ? "foldCompact" : "foldExpand");
   btn.title = anyOpen ? "Collapse all folders" : "Expand all folders";
   btn.onclick = () => {
-    const set = anyOpen
-      ? new Set(parentFolders.map((entry) => lowerPath(entry)))
-      : new Set();
-    saveCollapsedFolders(set);
+    if (anyOpen) {
+      expandedFolders.clear();
+    } else {
+      for (const entry of parentFolders) expandedFolders.add(lowerPath(entry));
+    }
     renderSidebar();
   };
 }
@@ -7265,10 +7260,15 @@ function promptShortcuts() {
 }
 function promptThumbPicker(item) {
   if (!item) return;
-  let chosen = 0;
+  let chosen = null;
   let timer = null;
   let disposed = false;
+  let version = 0;
+  let times = [];
+  let shuffleButton = null;
+  const cells = new Map();
   const grid = h("div", { class: "thumb-picker" });
+  const refineBox = h("div", { class: "thumb-refine" });
   const status = h("p", { class: "modal-note", text: "Extracting frames from the video…" });
   const tools = h("div", { class: "thumb-picker-tools" });
   const stop = () => {
@@ -7276,11 +7276,16 @@ function promptThumbPicker(item) {
     if (timer) clearTimeout(timer);
     timer = null;
   };
+  const clearSelection = () => {
+    grid.querySelectorAll(".thumb-choice").forEach((node) => node.classList.remove("selected", "anchor"));
+    refineBox.querySelectorAll(".thumb-choice").forEach((node) => node.classList.remove("selected"));
+  };
   const useFrame = async (setBusy) => {
     if (!chosen) { toast("Pick one of the frames first.", "info"); return; }
     setBusy(true);
+    const action = chosen.source === "refine" ? "select-refine" : "select";
     try {
-      await api(`/api/thumb-picker/${item.id}/select`, { method: "POST", body: { index: chosen } });
+      await api(`/api/thumb-picker/${item.id}/${action}`, { method: "POST", body: { index: chosen.index } });
       stop();
       closeModal();
       toast("Thumbnail updated.", "success");
@@ -7298,8 +7303,9 @@ function promptThumbPicker(item) {
     subtitle: item.name,
     wide: true,
     content: h("div", {},
-      h("p", { class: "modal-note", text: "Five frames are grabbed evenly across the video. Click the one that should stand for it in the library, or shuffle for five more from random points." }),
+      h("p", { class: "modal-note", text: "Frames fill in as they arrive and are spread evenly across the video. Click one to bring up nine finer moments around it, or shuffle for a fresh set from random points." }),
       grid,
+      refineBox,
       status,
       tools
     ),
@@ -7311,6 +7317,7 @@ function promptThumbPicker(item) {
   const fail = (text, retry) => {
     status.textContent = text;
     tools.replaceChildren();
+    shuffleButton = null;
     if (!retry) return;
     const button = h("button", { class: "btn", type: "button", text: "Try again" });
     button.addEventListener("click", () => {
@@ -7320,31 +7327,107 @@ function promptThumbPicker(item) {
     });
     tools.append(button);
   };
-  const showFrames = (data) => {
-    status.textContent = "Click the frame you want, then press Use thumbnail.";
-    grid.replaceChildren();
+  const refineAround = async (second, anchor) => {
+    refineBox.replaceChildren(h("p", { class: "modal-note", text: `Looking closer around ${fmtDuration(second)}…` }));
+    const strip = h("div", { class: "thumb-picker" });
+    for (let index = 0; index < 9; index += 1) {
+      strip.append(h("button", { class: "thumb-choice loading", type: "button" }, h("div", { class: "spinner small" })));
+    }
+    refineBox.append(strip);
+    let data = null;
+    try {
+      data = await api(`/api/thumb-picker/${item.id}/refine`, { method: "POST", body: { time: second } });
+    } catch (error) {
+      if (!disposed && strip.isConnected) {
+        refineBox.replaceChildren(h("p", { class: "modal-note", text: error.message }));
+      }
+      return;
+    }
+    if (disposed || !strip.isConnected) return;
+    const note = h("p", { class: "modal-note", text: `Fine frames around ${fmtDuration(second)}. Tap one, then press Use thumbnail.` });
+    const row = h("div", { class: "thumb-picker" });
     for (const candidate of data.candidates || []) {
       const tile = h("button", { type: "button", class: "thumb-choice", title: fmtDuration(candidate.time) },
         h("img", { src: candidate.url, alt: "", loading: "lazy" }),
         h("span", { text: fmtDuration(candidate.time) })
       );
       tile.addEventListener("click", () => {
-        chosen = candidate.index;
-        grid.querySelectorAll(".thumb-choice").forEach((node) => node.classList.toggle("selected", node === tile));
+        clearSelection();
+        if (anchor.isConnected) anchor.classList.add("anchor");
+        tile.classList.add("selected");
+        chosen = { source: "refine", index: candidate.index };
       });
-      grid.append(tile);
+      row.append(tile);
     }
-    const shuffle = h("button", { class: "btn", type: "button", text: "Shuffle frames" });
-    shuffle.addEventListener("click", () => shuffleFrames(shuffle));
-    tools.replaceChildren(shuffle);
+    refineBox.replaceChildren(note, row);
+    refineBox.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  };
+  const fillCell = (index) => {
+    const cell = cells.get(index);
+    if (!cell || cell.loaded) return;
+    cell.img.addEventListener("load", () => {
+      cell.loaded = true;
+      cell.spin.remove();
+      cell.tile.classList.remove("loading");
+    }, { once: true });
+    cell.img.addEventListener("error", () => {
+      cell.img.removeAttribute("src");
+    }, { once: true });
+    cell.img.src = `/api/thumb-picker/${item.id}/${index}?v=${version}`;
+    cell.img.hidden = false;
+  };
+  const applyPlan = (data) => {
+    const next = data.version || 0;
+    if (next !== version) {
+      version = next;
+      times = data.times || [];
+      cells.clear();
+      grid.replaceChildren();
+      refineBox.replaceChildren();
+      chosen = null;
+      times.forEach((second, offset) => {
+        const index = offset + 1;
+        const img = h("img", { alt: "", loading: "lazy" });
+        const spin = h("div", { class: "spinner small" });
+        const tile = h("button", { type: "button", class: "thumb-choice loading", title: fmtDuration(second) },
+          spin, img, h("span", { text: fmtDuration(second) })
+        );
+        const cell = { tile, img, spin, loaded: false };
+        tile.addEventListener("click", () => {
+          if (!cell.loaded) return;
+          clearSelection();
+          tile.classList.add("selected");
+          chosen = { source: "frames", index };
+          refineAround(second, tile);
+        });
+        cells.set(index, cell);
+        grid.append(tile);
+      });
+    }
+    const ready = data.state === "ready"
+      ? times.map((_, offset) => offset + 1)
+      : data.ready || [];
+    for (const index of ready) fillCell(index);
+    const done = ready.length >= times.length && times.length > 0;
+    status.textContent = done
+      ? "Click the frame you want; nine finer moments open around it. Press Use thumbnail when happy."
+      : `Frames appear as they finish (${ready.length} of ${times.length}). Any that are ready can be picked and kept right away.`;
+    if (!shuffleButton) {
+      shuffleButton = h("button", { class: "btn", type: "button", text: "Shuffle frames" });
+      shuffleButton.addEventListener("click", () => shuffleFrames(shuffleButton));
+      tools.replaceChildren(shuffleButton);
+    }
+    shuffleButton.disabled = !done;
   };
   const shuffleFrames = async (button) => {
     if (disposed) return;
     if (timer) { clearTimeout(timer); timer = null; }
     button.disabled = true;
-    chosen = 0;
+    chosen = null;
+    version = 0;
     grid.replaceChildren();
-    status.textContent = "Grabbing five new frames from random points…";
+    refineBox.replaceChildren();
+    status.textContent = "Grabbing a new set of frames from random points…";
     let data = null;
     try {
       data = await api(`/api/thumb-picker/${item.id}/shuffle`, { method: "POST" });
@@ -7353,9 +7436,9 @@ function promptThumbPicker(item) {
       return;
     }
     if (disposed || !grid.isConnected) return;
-    if (data.state === "ready") { showFrames(data); return; }
-    if (data.state === "error") { fail(data.reason || "Could not generate frames.", true); return; }
-    timer = setTimeout(() => load(false), 1500);
+    if (data.state === "ready" || data.state === "building") { applyPlan(data); }
+    else if (data.state === "error") { fail(data.reason || "Could not generate frames.", true); return; }
+    if (data.state !== "ready") timer = setTimeout(() => load(false), 700);
   };
   const load = async (force) => {
     if (disposed) return;
@@ -7368,7 +7451,12 @@ function promptThumbPicker(item) {
     }
     // Closing the dialog (Cancel, ×, Escape) unmounts the grid; stop then.
     if (disposed || !grid.isConnected) return;
-    if (data.state === "ready") { showFrames(data); return; }
+    if (data.state === "ready") { applyPlan(data); return; }
+    if (data.state === "building") {
+      applyPlan(data);
+      timer = setTimeout(() => load(false), 700);
+      return;
+    }
     if (data.state === "missing-tool") {
       fail("Choosing a thumbnail needs ffmpeg, which is not installed yet.", false);
       const install = h("button", { class: "btn", type: "button", text: "Install ffmpeg" });
@@ -7378,7 +7466,7 @@ function promptThumbPicker(item) {
     }
     if (data.state === "error") { fail(data.reason || "Could not generate frames.", true); return; }
     if (data.state === "unavailable") { fail(data.reason || "This file has no video frames.", false); return; }
-    timer = setTimeout(() => load(false), 2000);
+    timer = setTimeout(() => load(false), 700);
   };
   load(false);
 }

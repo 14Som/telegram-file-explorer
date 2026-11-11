@@ -74,14 +74,16 @@ def _headers(cookie: str) -> str:
     return f"Cookie: tfe_session={cookie}\r\n"
 
 
-def probe_duration(ffmpeg: Path, url: str, cookie: str) -> float:
+def probe_duration(
+    ffmpeg: Path, url: str, cookie: str, timeout: float = 60.0
+) -> float:
     """Read the length from ffmpeg's own input probe (this build has no ffprobe)."""
     try:
         result = subprocess.run(
             [str(ffmpeg), "-hide_banner", "-headers", _headers(cookie), "-i", url],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=timeout,
             creationflags=_NO_WINDOW,
         )
         match = DURATION.search(result.stderr or "")
@@ -100,6 +102,9 @@ def _grab_frame(ffmpeg: Path, url: str, cookie: str, second: float, target: Path
                 str(ffmpeg),
                 "-hide_banner", "-loglevel", "error",
                 "-headers", _headers(cookie),
+                # One keyframe packet instead of the whole GOP: a 30-tile sheet
+                # used to read tens of megabytes per video from Telegram.
+                "-noaccurate_seek",
                 "-ss", f"{second:.3f}",
                 "-i", url,
                 "-frames:v", "1",

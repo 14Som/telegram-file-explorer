@@ -143,6 +143,9 @@ UPLOAD_PART_MIN_BYTES = 10 * 1024 * 1024
 # switch to its generic iterator (extra alignment requests), so stay at the cap
 # and let each segment be a couple of back-to-back chunks instead.
 DOWNLOAD_CHUNK = 512 * 1024
+# Telegram keeps files in 1 MiB blocks: a GetFile read that runs past a block
+# boundary comes back empty, so every request must end inside its block.
+FILE_BLOCK = 1024 * 1024
 _SEGMENT_END = object()
 
 # Telegram Desktop's published app credentials. They let the first sign-in
@@ -1574,11 +1577,58 @@ class TelegramService:
             self._message_cache.pop(oldest, None)
         return message
 
-    async def stream_chunks(self, message: Any, start: int, length: int) -> AsyncIterator[bytes]:
+    async def stream_chunks(
+        self, message: Any, start: int, length: int
+    ) -> AsyncIterator[bytes]:
         remaining = max(0, int(length))
         if remaining == 0:
             return
         client = self._require_ready()
+        # A frame grab asks for a few hundred kilobytes, which fits in one
+        # GetFileRequest. Those only need 4 KiB alignment, and Telegram throttles
+        # every request separately, so aligning to the 512 KiB chunk boundary
+        # would double the cost of each seek for no benefit.
+        request_start = max(0, int(start))
+        if remaining <= DOWNLOAD_CHUNK and request_start % 4096 + remaining <= DOWNLOAD_CHUNK:
+            offset = request_start
+            lead = offset % 4096
+            if lead:
+                offset -= lead
+            need = lead + remaining
+            # Telegram only accepts a full 512 KiB limit, and a read that runs
+            # past a 1 MiB block boundary is refused, so use the one-request
+            # path only when that request fits inside the current block. The
+            # chunked path below starts 512 KiB-aligned and never crosses.
+            if offset % FILE_BLOCK + DOWNLOAD_CHUNK <= FILE_BLOCK:
+                request = DOWNLOAD_CHUNK
+                iterator = client.iter_download(
+                    message, offset=offset, request_size=request, limit=1
+                )
+                sent = 0
+                produced = 0
+                try:
+                    while sent < need:
+                        try:
+                            chunk = await iterator.__anext__()
+                        except StopAsyncIteration:
+                            break
+                        data = chunk[: need - sent]
+                        sent += len(data)
+                        if lead:
+                            if len(data) <= lead:
+                                lead -= len(data)
+                                continue
+                            data = data[lead:]
+                            lead = 0
+                        if data:
+                            produced += len(data)
+                            yield data
+                finally:
+                    await iterator.close()
+                if produced:
+                    return
+                # An empty reply means Telegram rejected that window; the chunked
+                # path below starts on a block boundary and always works.
         wanted = remaining
         offset = max(0, int(start))
         # Telegram only accepts a multi-chunk GetFile read that begins on a
@@ -1598,11 +1648,8 @@ class TelegramService:
             try:
                 while cursor < size:
                     need = size - cursor
-                    # The limit counts chunks, not bytes; assume the smallest
-                    # chunk Telegram may return so a short response can never
-                    # end a segment early. The iterator is closed explicitly so
-                    # a borrowed DC sender is handed back instead of waiting for
-                    # the GC.
+                    # The iterator is closed explicitly so a borrowed DC sender
+                    # is handed back instead of waiting for the GC.
                     iterator = client.iter_download(
                         message,
                         offset=position + cursor,
@@ -1611,7 +1658,11 @@ class TelegramService:
                     )
                     got = 0
                     try:
-                        async for chunk in iterator:
+                        while True:
+                            try:
+                                chunk = await iterator.__anext__()
+                            except StopAsyncIteration:
+                                break
                             piece = chunk[: need - got]
                             if not piece:
                                 break

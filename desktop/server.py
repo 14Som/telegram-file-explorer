@@ -80,7 +80,7 @@ log = logging.getLogger("tfe.server")
 
 QUIT = threading.Event()
 COOKIE = "tfe_session"
-APP_VERSION = "2.6.30"
+APP_VERSION = "2.6.37"
 # The Android build extracts the interface next to its writable data and runs
 # the same server there; the desktop EXE keeps using the bundled copy.
 UI_DIR = Path(
@@ -342,6 +342,10 @@ class MpvBody(BaseModel):
 
 class ThumbPickBody(BaseModel):
     index: int
+
+
+class ThumbRefineBody(BaseModel):
+    time: float = 0.0
 
 
 class TransferCancelBody(BaseModel):
@@ -1459,6 +1463,10 @@ async def _warm_thumbs(state: Any) -> None:
                     and not state.locked
                 ):
                     await asyncio.sleep(0.4)
+                while thumbpick.busy() and not state.locked:
+                    # A picker build is waiting on frames; every request this
+                    # pass makes would queue in front of them.
+                    await asyncio.sleep(1.0)
                 while getattr(state, "vault_saving", False) and not state.locked:
                     # A snapshot upload shares this link; artwork can wait.
                     await asyncio.sleep(1.5)
@@ -2850,6 +2858,9 @@ SHELL_THUMB_MAX_BYTES = 256 * 1024 ** 2
 _external_locks: Dict[int, asyncio.Lock] = {}
 _shell_thumb_locks: Dict[int, asyncio.Lock] = {}
 _auto_thumb_locks: Dict[int, asyncio.Lock] = {}
+# Tile thumbnails are background artwork; two at a time keeps them from
+# crowding out the frames the user is actually waiting for.
+_auto_thumb_sem = asyncio.Semaphore(2)
 
 
 def _scratch_path(item: Dict[str, Any], tag: str) -> Path:
@@ -2989,7 +3000,9 @@ async def auto_thumb_frame(item_id: int, request: Request):
     cached = thumbpick.custom_path(item_id).is_file()
     if not cached:
         lock = _auto_thumb_locks.setdefault(item_id, asyncio.Lock())
-        async with lock:
+        async with lock, _auto_thumb_sem:
+            while thumbpick.busy():
+                await asyncio.sleep(0.5)
             # Frame grabs only need the bytes they seek to, so they must not
             # start a playback prefetch.
             url = f"{request.base_url}api/stream/{item_id}?preview=1"
@@ -3342,7 +3355,7 @@ async def storyboard_sprite(item_id: int, request: Request):
 
 # --------------------------------------------------------------- thumb picker
 def _picker_payload(item_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
-    if data.get("state") == "ready":
+    if data.get("state") in ("ready", "building"):
         data["candidates"] = [
             {
                 "index": index,
@@ -3351,7 +3364,8 @@ def _picker_payload(item_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
             }
             for index, second in enumerate(data.get("times") or [], start=1)
         ]
-        data["custom"] = thumbpick.custom_path(item_id).is_file()
+        if data.get("state") == "ready":
+            data["custom"] = thumbpick.custom_path(item_id).is_file()
     return data
 
 
@@ -3375,12 +3389,54 @@ async def thumb_picker_shuffle(item_id: int, request: Request):
     return _picker_payload(item_id, data)
 
 
+@app.post("/api/thumb-picker/{item_id}/refine")
+async def thumb_picker_refine(item_id: int, body: ThumbRefineBody, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    url = f"{request.base_url}api/stream/{item_id}?preview=1"
+    try:
+        data = await run_in_threadpool(
+            thumbpick.refine, item, url, state.key, body.time
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    version = data.get("version")
+    data["candidates"] = [
+        {
+            "index": index,
+            "time": second,
+            "url": f"/api/thumb-picker/{item_id}/refine/{index}?v={version}",
+        }
+        for index, second in enumerate(data.get("times") or [], start=1)
+    ]
+    return data
+
+
+@app.get("/api/thumb-picker/{item_id}/refine/{index}")
+async def thumb_picker_refine_frame(item_id: int, index: int, request: Request):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    if index < 1 or index > thumbpick.REFINE_COUNT:
+        raise HTTPException(status_code=404, detail="That frame is not ready.")
+    path = thumbpick.refine_path(item, index)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="That frame is not ready.")
+    data = await run_in_threadpool(thumbcrypt.read_bytes, path)
+    if not data:
+        raise HTTPException(status_code=404, detail="That frame is not ready.")
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
 @app.get("/api/thumb-picker/{item_id}/{index}")
 async def thumb_picker_frame(item_id: int, index: int, request: Request):
     state = _state(request)
     item = await _scoped_item(state, item_id)
-    path = thumbpick.frame_path(item, index)
-    if not path.is_file():
+    path = thumbpick.frame_source(item, index)
+    if path is None:
         raise HTTPException(status_code=404, detail="That frame is not ready.")
     data = await run_in_threadpool(thumbcrypt.read_bytes, path)
     if not data:
@@ -3402,6 +3458,29 @@ async def thumb_picker_select(item_id: int, body: ThumbPickBody, request: Reques
         raise HTTPException(status_code=400, detail=str(exc))
     except FileNotFoundError:
         raise HTTPException(status_code=409, detail="Generate the frames first.")
+    updated = await run_in_threadpool(
+        state.catalog.update,
+        item_id,
+        has_thumb=1,
+        thumb_version=int(time.time()),
+    )
+    public = public_item(updated or item, _vault(state.service.status()))
+    await _attach_stars(state, [public])
+    return public
+
+
+@app.post("/api/thumb-picker/{item_id}/select-refine")
+async def thumb_picker_select_refine(
+    item_id: int, body: ThumbPickBody, request: Request
+):
+    state = _state(request)
+    item = await _scoped_item(state, item_id)
+    try:
+        await run_in_threadpool(thumbpick.select_refine, item, body.index)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError:
+        raise HTTPException(status_code=409, detail="Generate the fine frames first.")
     updated = await run_in_threadpool(
         state.catalog.update,
         item_id,
@@ -4310,6 +4389,9 @@ async def read_file_head(item_id: int, request: Request):
 # comfortable buffer instead of a stream of tiny requests. Blocks are cached
 # on disk by streamcache, so repeats and seeks stay local.
 INLINE_STREAM_WINDOW = 32 * 1024 * 1024
+# A frame grab stops as soon as it has its frame, so the window stays small:
+# asking for more made every grab pull slices it then abandoned.
+PREVIEW_STREAM_WINDOW = 512 * 1024
 
 
 async def _serve_media(
@@ -4337,14 +4419,22 @@ async def _serve_media(
             return Response(status_code=416, headers=headers)
         start, end = parsed
         if not download and not full:
-            end = min(end, start + INLINE_STREAM_WINDOW - 1)
+            window = PREVIEW_STREAM_WINDOW if preview else INLINE_STREAM_WINDOW
+            if preview:
+                # Stay inside one GetFileRequest: it may start at a 4 KiB
+                # aligned offset, so that much of the window is lead-in.
+                window -= start % 4096
+            end = min(end, start + window - 1)
         length = end - start + 1
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         headers["Content-Length"] = str(length)
         status_code = 206
-    elif not download and not full and size > INLINE_STREAM_WINDOW:
-        start, length = 0, INLINE_STREAM_WINDOW
-        headers["Content-Range"] = f"bytes 0-{INLINE_STREAM_WINDOW - 1}/{size}"
+    elif not download and not full and size > (
+        PREVIEW_STREAM_WINDOW if preview else INLINE_STREAM_WINDOW
+    ):
+        window = PREVIEW_STREAM_WINDOW if preview else INLINE_STREAM_WINDOW
+        start, length = 0, window
+        headers["Content-Range"] = f"bytes 0-{window - 1}/{size}"
         headers["Content-Length"] = str(length)
         status_code = 206
     else:
@@ -4368,7 +4458,8 @@ async def _serve_media(
                 )
             try:
                 async for chunk in streamcache.read(
-                    state.service, message, cache_key, start, length, size
+                    state.service, message, cache_key, start, length, size,
+                    direct=preview,
                 ):
                     if QUIT.is_set():
                         return
@@ -4377,6 +4468,9 @@ async def _serve_media(
                 return
             except OSError:
                 # Cache trouble mid-stream: the client reconnects and retries.
+                if sent:
+                    return
+            except Exception:
                 if sent:
                     return
         async for chunk in state.service.stream_chunks(message, start, length):

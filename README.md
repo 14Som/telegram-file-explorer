@@ -129,9 +129,10 @@ survives on the boot volume.
   Viewer.js with zoom, pan, rotate, flip, one-to-one size, slideshow and a
   thumbnail strip for stepping through the folder. A video without a Telegram
   cover gets a frame automatically the first time it is listed; a poor cover can
-  be replaced from *Thumbnail*: five frames are pulled from the stream
-  and you keep the one you like, or shuffle for five more taken from random
-  points; the pick is kept across syncs, sign-outs and vault restores. PDF and text
+  be replaced from *Thumbnail*: four frames at a time are pulled from the stream
+  and fill the grid as they arrive; click one to see nine finer moments around
+  it, or shuffle for 18 more from random points; the pick is kept across syncs,
+  sign-outs and vault restores. PDF and text
   preview inline; downloads keep the original filename
 - **Read documents** — EPUB/EPUB3, FB2, PDF, DOC/DOCX, HTML/HTM/XML, Markdown and
   TXT open in a built-in reader. PDFs scroll continuously with lazy page rendering,
